@@ -1,0 +1,40 @@
+"""Core interfaces and protocols."""
+
+from __future__ import annotations
+
+from typing import Iterable, List, Protocol, Sequence, runtime_checkable
+
+from .models import Chunk, Document
+
+
+@runtime_checkable
+class DocumentLoader(Protocol):
+    def load(self) -> List[Document]:
+        """Load and normalize documents."""
+
+
+@runtime_checkable
+class Chunker(Protocol):
+    def chunk(self, document: Document) -> List[Chunk]:
+        """Split a document into chunks."""
+
+
+@runtime_checkable
+class Embedder(Protocol):
+    def embed(self, texts: Sequence[str]) -> List[List[float]]:
+        """Generate embeddings for a list of texts."""
+
+
+@runtime_checkable
+class VectorStore(Protocol):
+    def add(self, chunks: Sequence[Chunk], embeddings: Sequence[Sequence[float]]) -> None:
+        """Persist chunks and embeddings into storage."""
+
+    def query(self, embedding: Sequence[float], top_k: int) -> List[Chunk]:
+        """Query similar chunks by vector embedding."""
+
+
+@runtime_checkable
+class Retriever(Protocol):
+    def retrieve(self, query: str, top_k: int) -> List[Chunk]:
+        """Retrieve chunks for a query."""
