@@ -47,6 +47,32 @@ pip install -e .[dev]
 pytest
 ```
 
+**CLI 使用**
+
+安装可选的 SQLite 向量扩展：
+
+```powershell
+pip install -e .[sqlite]
+```
+
+文档入库（使用 sqlite-vec）：  
+
+```powershell
+yfanrag ingest docs/ --db yfanrag.db --store sqlite-vec --enable-fts
+```
+
+向量检索：  
+
+```powershell
+yfanrag query \"hello\" --db yfanrag.db --store sqlite-vec --top-k 3
+```
+
+全文检索：  
+
+```powershell
+yfanrag fts-query \"hello\" --db yfanrag.db --top-k 3
+```
+
 **贡献**
 
 欢迎提交 Issue 与 PR。建议先从 `docs/TECHNICAL.md` 的任务表中挑选任务。

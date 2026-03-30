@@ -120,6 +120,19 @@ flowchart LR
 - 本地实现：基于 `HashingEmbedder` 的确定性向量，适用于测试与示例。
 - API 实现：`HttpEmbedder` 通过 HTTP POST 调用外部服务，默认请求体为 `{\"texts\": [...]}`，响应支持 `{\"embeddings\": [...]}` 或 `{\"data\": [{\"embedding\": ...}]}` 两种格式。
 
+**6.3 SQLite 向量与 FTS 适配**
+
+- SQLite `vec0` 通过可加载扩展提供向量存储与检索，Python 侧需调用 `sqlite_vec.load(conn)` 并使用 `serialize_float32()` 序列化向量。citeturn1view0
+- `vec0` 虚表支持辅助列（如 `+text`）与元数据列，适合将文本与向量放在同一表中。citeturn2view0
+- KNN 查询使用 `embedding MATCH ? AND k = ?` 语法，其中 `k` 控制 TopK。citeturn3view0
+- FTS5 通过 `MATCH` 语法进行全文检索，可与向量检索做混合召回。citeturn0search1
+
+**6.4 CLI**
+
+- `yfanrag ingest`：文档入库，支持 `sqlite-vec` 与 `memory` 后端，支持 FTS 建索引。
+- `yfanrag query`：向量检索（TopK）。
+- `yfanrag fts-query`：全文检索。
+
 **7. 开发任务表**
 
 | 任务ID | 任务内容 | 验收标准 | 优先级 | 状态 |
@@ -128,15 +141,15 @@ flowchart LR
 | T-002 | 文档加载器基础实现 | 支持 md/txt，提供统一 Document 结构 | P0 | 已完成 |
 | T-003 | 分块策略模块 | 固定窗口与递归分块可用 | P0 | 已完成 |
 | T-004 | Embedding Provider 抽象 | 支持本地与 API 两类实现 | P0 | 已完成 |
-| T-005 | SQLite `sqlite-vec` 适配层 | 可建库、写入向量、TopK 检索 | P0 | 未开始 |
+| T-005 | SQLite `sqlite-vec` 适配层 | 可建库、写入向量、TopK 检索 | P0 | 已完成 |
 | T-006 | SQLite `vec1` 适配层 | 可建索引与检索，含迁移策略 | P1 | 未开始 |
 | T-007 | DuckDB `vss` 适配层 | 可建索引与检索，含持久化配置 | P1 | 未开始 |
-| T-008 | FTS 适配层 | SQLite FTS5 与 DuckDB FTS 可用 | P1 | 未开始 |
+| T-008 | FTS 适配层 | SQLite FTS5 与 DuckDB FTS 可用 | P1 | 已完成 |
 | T-009 | 混合检索融合器 | 向量+FTS 加权融合可用 | P1 | 未开始 |
 | T-010 | 增量更新与删除 | 文档更新不会产生孤儿索引 | P1 | 未开始 |
 | T-011 | 元数据过滤 | 支持过滤字段与范围查询 | P1 | 未开始 |
 | T-012 | 批处理与缓存 | 支持批量 embedding 与写入 | P2 | 未开始 |
-| T-013 | CLI 原型 | 支持 ingest/query/rebuild | P2 | 未开始 |
+| T-013 | CLI 原型 | 支持 ingest/query/rebuild | P2 | 已完成 |
 | T-014 | 测试体系 | 单元与集成测试覆盖核心路径 | P1 | 已完成 |
 | T-015 | Benchmark 与评估脚本 | 可生成检索质量与性能报告 | P2 | 未开始 |
 | T-016 | 示例与教程 | 至少 3 个可运行示例 | P2 | 未开始 |
