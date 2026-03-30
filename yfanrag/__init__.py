@@ -8,7 +8,7 @@ from .config import (
     StorageConfig,
     YFanRAGConfig,
 )
-from .embedders import HashingEmbedder
+from .embedders import EmbedderFactory, HashingEmbedder, HttpEmbedder
 from .interfaces import Chunker, DocumentLoader, Embedder, Retriever, VectorStore
 from .loaders.text import TextFileLoader
 from .models import Chunk, Document
@@ -32,6 +32,8 @@ __all__ = [
     "FixedChunker",
     "RecursiveChunker",
     "HashingEmbedder",
+    "HttpEmbedder",
+    "EmbedderFactory",
     "InMemoryVectorStore",
     "SimplePipeline",
 ]

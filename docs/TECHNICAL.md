@@ -115,6 +115,11 @@ flowchart LR
 - 最小闭环测试：构建简化 pipeline，验证 `ingest -> query` 端到端路径。
 - 目标：保持测试执行快速，可在本地与 CI 中轻量运行。
 
+**6.2 Embedding Provider**
+
+- 本地实现：基于 `HashingEmbedder` 的确定性向量，适用于测试与示例。
+- API 实现：`HttpEmbedder` 通过 HTTP POST 调用外部服务，默认请求体为 `{\"texts\": [...]}`，响应支持 `{\"embeddings\": [...]}` 或 `{\"data\": [{\"embedding\": ...}]}` 两种格式。
+
 **7. 开发任务表**
 
 | 任务ID | 任务内容 | 验收标准 | 优先级 | 状态 |
@@ -122,7 +127,7 @@ flowchart LR
 | T-001 | 定义核心接口与配置模型 | 完成公共 API 草案与配置 schema | P0 | 已完成 |
 | T-002 | 文档加载器基础实现 | 支持 md/txt，提供统一 Document 结构 | P0 | 已完成 |
 | T-003 | 分块策略模块 | 固定窗口与递归分块可用 | P0 | 已完成 |
-| T-004 | Embedding Provider 抽象 | 支持本地与 API 两类实现 | P0 | 未开始 |
+| T-004 | Embedding Provider 抽象 | 支持本地与 API 两类实现 | P0 | 已完成 |
 | T-005 | SQLite `sqlite-vec` 适配层 | 可建库、写入向量、TopK 检索 | P0 | 未开始 |
 | T-006 | SQLite `vec1` 适配层 | 可建索引与检索，含迁移策略 | P1 | 未开始 |
 | T-007 | DuckDB `vss` 适配层 | 可建索引与检索，含持久化配置 | P1 | 未开始 |
