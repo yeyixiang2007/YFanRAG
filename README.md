@@ -16,7 +16,7 @@
 
 **当前状态**
 
-项目处于规划与文档阶段，API 与实现以 `docs/TECHNICAL.md` 为准。
+已完成最小闭环与基础测试，API 与实现以 `docs/TECHNICAL.md` 为准。
 
 **目录结构（规划）**
 
@@ -30,6 +30,22 @@
 - SQLite `sqlite-vec` 端到端可用
 - FTS 与混合检索
 - `vec1` 与 DuckDB 适配层
+
+**开发与测试**
+
+创建虚拟环境并安装开发依赖：
+
+```powershell
+python -m venv .venv
+.\\.venv\\Scripts\\Activate.ps1
+pip install -e .[dev]
+```
+
+运行测试：
+
+```powershell
+pytest
+```
 
 **贡献**
 

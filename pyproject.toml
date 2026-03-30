@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yfanrag"
+version = "0.0.1"
+description = "Minimal local RAG toolkit for personal developers"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "YFanRAG" }]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-q"

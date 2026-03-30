@@ -1,5 +1,6 @@
 """Public API exports."""
 
+from .chunking import FixedChunker, RecursiveChunker
 from .config import (
     ChunkingConfig,
     EmbeddingConfig,
@@ -7,9 +8,12 @@ from .config import (
     StorageConfig,
     YFanRAGConfig,
 )
+from .embedders import HashingEmbedder
 from .interfaces import Chunker, DocumentLoader, Embedder, Retriever, VectorStore
-from .models import Chunk, Document
 from .loaders.text import TextFileLoader
+from .models import Chunk, Document
+from .pipeline import SimplePipeline
+from .vectorstores.memory import InMemoryVectorStore
 
 __all__ = [
     "Chunk",
@@ -25,4 +29,9 @@ __all__ = [
     "StorageConfig",
     "YFanRAGConfig",
     "TextFileLoader",
+    "FixedChunker",
+    "RecursiveChunker",
+    "HashingEmbedder",
+    "InMemoryVectorStore",
+    "SimplePipeline",
 ]
