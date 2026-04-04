@@ -110,6 +110,7 @@ yfanrag hybrid-query "hello" --db yfanrag.db --store sqlite-vec1 --top-k 3 --alp
 | `benchmark` | 生成检索质量与性能报告 | `yfanrag benchmark benchmarks/cases.jsonl --db yfanrag.db --mode hybrid --output report.json` |
 | `migrate-vec0-to-vec1` | 将 `sqlite-vec(vec0)` 表迁移到 `vec1` 适配层 | `yfanrag migrate-vec0-to-vec1 --db yfanrag.db` |
 | `migrate-sqlite-duckdb` | SQLite(vec1) 与 DuckDB(vss) 双向迁移 | `yfanrag migrate-sqlite-duckdb --direction sqlite-to-duckdb` |
+| `chat-ui` | 启动 Tkinter 对话界面（接入真实大模型 API） | `yfanrag chat-ui` |
 
 ## 查询过滤
 
@@ -203,6 +204,84 @@ yfanrag query "hello" --store sqlite-vec1 --sqlite-extension-path "D:\ext\vec1.d
 - `examples/01_basic_ingest_query.py`
 - `examples/02_hybrid_query.py`
 - `examples/03_benchmark.py`
+- `examples/04_tk_chat_app.py`
+
+## Tkinter 对话应用（图形化页面）
+
+### 启动方式
+
+```powershell
+yfanrag chat-ui
+```
+
+或：
+
+```powershell
+python examples/04_tk_chat_app.py
+```
+
+### 支持的 Provider 格式
+
+- `openai_compatible`（`/v1/chat/completions` 及兼容供应商）
+- `deepseek`（`https://api.deepseek.com/chat/completions`，OpenAI-Compatible）
+- `openai_responses`（`/v1/responses`）
+- `anthropic`（`/v1/messages`）
+
+### 页面结构
+
+- 顶栏：`Knowledge Base` 按钮、`Stream` 开关、状态指示（Ready/Request in flight/Stopped）。
+- 左侧配置栏：`provider / endpoint / model / api_key / header / system prompt / extra headers / extra body`。
+- 右侧会话区：对话记录、消息输入框、`Send`、`Stop`。
+
+### 快速上手（对话）
+
+1. 选择 Provider 预设（建议先用 `OpenAI-Compatible` 或 `DeepSeek`）。
+2. 填写 `Endpoint / Model / API Key`。
+3. 在右下输入框输入问题，按 `Ctrl+Enter` 或点击 `Send`。
+4. 需要流式输出时打开 `Stream`，中断生成点击 `Stop`。
+
+### API 配置本地持久化（加密）
+
+- 启动时自动读取本地加密配置（若存在）。
+- 退出窗口时自动保存当前 API 配置（加密后写盘）。
+- 可手动点击 `Save API Config` 和 `Reload API Config`。
+- 默认文件路径：`~/.yfanrag/chat_api_config.enc.json`。
+
+### 知识库管理窗口用法
+
+点击顶栏 `Knowledge Base` 打开管理窗口，按下面流程操作：
+
+1. 选择 `Database` 文件、`Store`（推荐 `sqlite-vec1`）、`Chunker`、`Chunk Size/Overlap`、`Embedding Dims`。
+2. 点击 `Add Files` 或 `Add Folder` 选择 `.md/.txt`，然后点 `Ingest / Upsert` 入库。
+3. 用 `Refresh Stats` 查看当前 `docs/chunks` 统计，用 `List Doc IDs` 查看可删除文档 ID。
+4. 在 `KB Query` 输入检索词并 `Run Query` 预览召回结果（`vector / hybrid / fts` 可切换）。
+5. 在 `Delete Doc ID(s)` 输入一个或多个 `doc_id`（空格/逗号分隔）并点击 `Delete`。
+
+### 在对话中启用知识库增强
+
+1. 在知识库管理窗口勾选 `Use KB Context In Chat`。
+2. 设置 `Context TopK`（建议 `3` 到 `5`）。
+3. 回到主聊天窗口发送消息，系统会先检索知识库并把片段附加到本次请求上下文。
+
+### 图形化操作流程图
+
+```mermaid
+flowchart LR
+  A[启动 chat-ui] --> B[配置 Provider 与 API Key]
+  B --> C[打开 Knowledge Base]
+  C --> D[Add Files/Folder]
+  D --> E[Ingest / Upsert]
+  E --> F[Run Query 预览]
+  F --> G[勾选 Use KB Context In Chat]
+  G --> H[发送对话 Prompt]
+  H --> I[模型返回答案]
+```
+
+### 常见问题
+
+- 下拉框文字看不清：请更新到最新代码并重启 `yfanrag chat-ui`（已修复白底白字问题）。
+- 非全屏看不到输入框：已修复布局，若仍异常请将窗口高度调大后重启。
+- 检索无结果：先在知识库窗口执行 `Refresh Stats`，确认 `docs/chunks` 大于 0，再检查查询词。
 
 ## 开发与发布
 

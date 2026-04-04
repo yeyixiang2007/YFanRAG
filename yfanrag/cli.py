@@ -426,6 +426,13 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chat_ui(_args: argparse.Namespace) -> int:
+    from .tk_chat_app import launch_tk_chat_app
+
+    launch_tk_chat_app()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="yfanrag")
     parser.add_argument("--log-level", default=None, help="Logging level, e.g. INFO/DEBUG")
@@ -669,6 +676,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Numeric range filter, format key:min:max; min/max can be empty; repeatable",
     )
     benchmark.set_defaults(func=cmd_benchmark)
+
+    chat_ui = sub.add_parser(
+        "chat-ui",
+        help="Launch Tkinter chat UI for real-model API conversation",
+    )
+    chat_ui.set_defaults(func=cmd_chat_ui)
 
     return parser
 

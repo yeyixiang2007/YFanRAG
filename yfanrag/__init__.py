@@ -1,5 +1,12 @@
 """Public API exports."""
 
+from .chat_providers import (
+    ChatApiClient,
+    ChatApiSettings,
+    ChatMessage,
+    PROVIDER_PRESETS,
+    parse_json_dict,
+)
 from .benchmark import (
     BenchmarkCase,
     RetrievalItem,
@@ -23,10 +30,21 @@ from .migrations import (
     migrate_sqlite_vec0_to_vec1,
     migrate_sqlite_vec1_to_duckdb_vss,
 )
+from .knowledge_base import (
+    QUERY_MODE_CHOICES,
+    STORE_CHOICES,
+    KnowledgeBaseConfig,
+    KnowledgeBaseDeleteResult,
+    KnowledgeBaseHit,
+    KnowledgeBaseIngestResult,
+    KnowledgeBaseManager,
+    KnowledgeBaseStats,
+)
 from .models import Chunk, Document
 from .observability import configure_logging, get_logger, log_slow_query
 from .pipeline import SimplePipeline
 from .retrievers import HybridHit, HybridRetriever
+from .secure_config import SecureConfigStore
 from .security import ensure_path_in_whitelist, parse_whitelist, whitelist_from_env
 from .vectorstores.duckdb_vss import DuckDbVssStore
 from .vectorstores.memory import InMemoryVectorStore
@@ -36,6 +54,11 @@ from .vectorstores.sqlite_vec1 import SqliteVec1Store
 __all__ = [
     "Chunk",
     "Document",
+    "ChatMessage",
+    "ChatApiSettings",
+    "ChatApiClient",
+    "PROVIDER_PRESETS",
+    "parse_json_dict",
     "BenchmarkCase",
     "RetrievalItem",
     "Chunker",
@@ -68,10 +91,27 @@ __all__ = [
     "migrate_sqlite_vec0_to_vec1",
     "migrate_sqlite_vec1_to_duckdb_vss",
     "migrate_duckdb_vss_to_sqlite_vec1",
+    "KnowledgeBaseConfig",
+    "KnowledgeBaseStats",
+    "KnowledgeBaseHit",
+    "KnowledgeBaseIngestResult",
+    "KnowledgeBaseDeleteResult",
+    "KnowledgeBaseManager",
+    "STORE_CHOICES",
+    "QUERY_MODE_CHOICES",
+    "SecureConfigStore",
     "configure_logging",
     "get_logger",
     "log_slow_query",
     "ensure_path_in_whitelist",
     "parse_whitelist",
     "whitelist_from_env",
+    "launch_tk_chat_app",
 ]
+
+
+def launch_tk_chat_app() -> None:
+    """Lazy loader to avoid importing tkinter unless needed."""
+    from .tk_chat_app import launch_tk_chat_app as _launch
+
+    _launch()
