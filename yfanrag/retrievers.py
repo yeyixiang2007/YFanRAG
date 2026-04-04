@@ -7,7 +7,7 @@ from math import isfinite
 from typing import Dict, List, Sequence
 
 from .fts import FtsMatch, SqliteFtsIndex
-from .interfaces import Embedder, Retriever, VectorStore
+from .interfaces import Embedder, FieldFilters, RangeFilters, Retriever, VectorStore
 from .models import Chunk
 
 
@@ -31,8 +31,22 @@ class HybridRetriever(Retriever):
         if not 0.0 <= self.alpha <= 1.0:
             raise ValueError("alpha must be between 0 and 1")
 
-    def retrieve(self, query: str, top_k: int) -> List[Chunk]:
-        return [hit.chunk for hit in self.retrieve_with_scores(query=query, top_k=top_k)]
+    def retrieve(
+        self,
+        query: str,
+        top_k: int,
+        filters: FieldFilters | None = None,
+        range_filters: RangeFilters | None = None,
+    ) -> List[Chunk]:
+        return [
+            hit.chunk
+            for hit in self.retrieve_with_scores(
+                query=query,
+                top_k=top_k,
+                filters=filters,
+                range_filters=range_filters,
+            )
+        ]
 
     def retrieve_with_scores(
         self,
@@ -40,6 +54,8 @@ class HybridRetriever(Retriever):
         top_k: int = 5,
         vector_top_k: int | None = None,
         fts_top_k: int | None = None,
+        filters: FieldFilters | None = None,
+        range_filters: RangeFilters | None = None,
     ) -> List[HybridHit]:
         if top_k <= 0:
             return []
@@ -47,7 +63,12 @@ class HybridRetriever(Retriever):
         fts_k = fts_top_k or top_k
 
         embedding = self.embedder.embed([query])[0]
-        vector_chunks = self.vector_store.query(embedding, vector_k)
+        vector_chunks = self.vector_store.query(
+            embedding,
+            vector_k,
+            filters=filters,
+            range_filters=range_filters,
+        )
         fts_matches = self.fts_index.query(query, fts_k)
 
         vector_raw = self._vector_raw_scores(vector_chunks)
@@ -72,6 +93,8 @@ class HybridRetriever(Retriever):
 
         hits: List[HybridHit] = []
         for chunk_id, chunk in chunk_map.items():
+            if not self._matches_filters(chunk, filters=filters, range_filters=range_filters):
+                continue
             vector_score = vector_norm.get(chunk_id, 0.0)
             fts_score = fts_norm.get(chunk_id, 0.0)
             fused_score = self.alpha * vector_score + (1.0 - self.alpha) * fts_score
@@ -110,6 +133,28 @@ class HybridRetriever(Retriever):
             reverse=True,
         )
         return hits[:top_k]
+
+    @staticmethod
+    def _matches_filters(
+        chunk: Chunk,
+        filters: FieldFilters | None,
+        range_filters: RangeFilters | None,
+    ) -> bool:
+        if filters:
+            for key, expected in filters.items():
+                value = getattr(chunk, key, chunk.metadata.get(key))
+                if value != expected:
+                    return False
+        if range_filters:
+            for key, (lower, upper) in range_filters.items():
+                value = getattr(chunk, key, chunk.metadata.get(key))
+                if not isinstance(value, (int, float)):
+                    return False
+                if lower is not None and value < lower:
+                    return False
+                if upper is not None and value > upper:
+                    return False
+        return True
 
     def _normalize(self, raw_scores: Dict[str, float]) -> Dict[str, float]:
         if not raw_scores:

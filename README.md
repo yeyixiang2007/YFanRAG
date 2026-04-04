@@ -69,6 +69,12 @@ yfanrag ingest docs/ --db yfanrag.db --store sqlite-vec --enable-fts
 yfanrag query \"hello\" --db yfanrag.db --store sqlite-vec --top-k 3
 ```
 
+字段与范围过滤（示例：按文档 + 起始偏移范围）：
+
+```powershell
+yfanrag query \"hello\" --db yfanrag.db --top-k 5 --filter "doc_id=file:docs/TECHNICAL.md" --range "start:0:2000"
+```
+
 全文检索：  
 
 ```powershell
@@ -78,7 +84,7 @@ yfanrag fts-query \"hello\" --db yfanrag.db --top-k 3
 混合检索（向量 + FTS 融合）：  
 
 ```powershell
-yfanrag hybrid-query \"hello\" --db yfanrag.db --top-k 3 --alpha 0.5
+yfanrag hybrid-query \"hello\" --db yfanrag.db --top-k 3 --alpha 0.5 --filter "doc_id=file:docs/TECHNICAL.md"
 ```
 
 按 `doc_id` 删除（含可选 FTS）：  

@@ -34,6 +34,22 @@ def test_pipeline_minimal_loop():
     assert results[0].doc_id == "doc-1"
 
 
+def test_pipeline_query_with_filters():
+    pipeline = SimplePipeline(
+        chunker=FixedChunker(chunk_size=50, chunk_overlap=0),
+        embedder=HashingEmbedder(dims=8),
+        store=InMemoryVectorStore(),
+    )
+    docs = [
+        Document(doc_id="doc-1", text="hello alpha"),
+        Document(doc_id="doc-2", text="hello beta"),
+    ]
+    pipeline.ingest(docs)
+
+    results = pipeline.query("hello", top_k=5, filters={"doc_id": "doc-2"})
+    assert [chunk.doc_id for chunk in results] == ["doc-2"]
+
+
 def test_pipeline_upsert_replaces_existing_doc_chunks():
     store = InMemoryVectorStore()
     pipeline = SimplePipeline(

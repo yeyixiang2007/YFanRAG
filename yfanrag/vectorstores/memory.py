@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import List, Sequence
 import math
 
+from ..interfaces import FieldFilters, RangeFilters
 from ..models import Chunk
 
 
@@ -21,7 +22,13 @@ class InMemoryVectorStore:
             self.chunks.append(chunk)
             self.embeddings.append([float(x) for x in embedding])
 
-    def query(self, embedding: Sequence[float], top_k: int) -> List[Chunk]:
+    def query(
+        self,
+        embedding: Sequence[float],
+        top_k: int,
+        filters: FieldFilters | None = None,
+        range_filters: RangeFilters | None = None,
+    ) -> List[Chunk]:
         if not self.embeddings:
             return []
         query_norm = self._norm(embedding)
@@ -30,6 +37,8 @@ class InMemoryVectorStore:
 
         scored = []
         for chunk, stored in zip(self.chunks, self.embeddings):
+            if not self._matches_filters(chunk, filters=filters, range_filters=range_filters):
+                continue
             score = self._dot(embedding, stored) / (query_norm * self._norm(stored))
             scored.append((score, chunk))
         scored.sort(key=lambda item: item[0], reverse=True)
@@ -61,3 +70,31 @@ class InMemoryVectorStore:
     @staticmethod
     def _norm(a: Sequence[float]) -> float:
         return math.sqrt(sum(x * x for x in a))
+
+    @staticmethod
+    def _field_value(chunk: Chunk, key: str) -> object | None:
+        if hasattr(chunk, key):
+            return getattr(chunk, key)
+        return chunk.metadata.get(key)
+
+    @classmethod
+    def _matches_filters(
+        cls,
+        chunk: Chunk,
+        filters: FieldFilters | None,
+        range_filters: RangeFilters | None,
+    ) -> bool:
+        if filters:
+            for key, expected in filters.items():
+                if cls._field_value(chunk, key) != expected:
+                    return False
+        if range_filters:
+            for key, (lower, upper) in range_filters.items():
+                value = cls._field_value(chunk, key)
+                if not isinstance(value, (int, float)):
+                    return False
+                if lower is not None and value < lower:
+                    return False
+                if upper is not None and value > upper:
+                    return False
+        return True

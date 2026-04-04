@@ -26,6 +26,38 @@ def test_inmemory_vectorstore_query_top1():
     assert results[0].chunk_id == "c1"
 
 
+def test_inmemory_vectorstore_query_with_field_filter():
+    embedder = HashingEmbedder(dims=4)
+    store = InMemoryVectorStore()
+    chunks = [
+        Chunk(chunk_id="c1", doc_id="d1", text="hello", start=0, end=5),
+        Chunk(chunk_id="c2", doc_id="d2", text="hello", start=0, end=5),
+    ]
+    store.add(chunks, embedder.embed(["hello", "hello"]))
+
+    query_embedding = embedder.embed(["hello"])[0]
+    results = store.query(query_embedding, top_k=5, filters={"doc_id": "d2"})
+    assert [chunk.chunk_id for chunk in results] == ["c2"]
+
+
+def test_inmemory_vectorstore_query_with_range_filter():
+    embedder = HashingEmbedder(dims=4)
+    store = InMemoryVectorStore()
+    chunks = [
+        Chunk(chunk_id="c1", doc_id="d1", text="hello", start=0, end=5),
+        Chunk(chunk_id="c2", doc_id="d1", text="hello", start=50, end=55),
+    ]
+    store.add(chunks, embedder.embed(["hello", "hello"]))
+
+    query_embedding = embedder.embed(["hello"])[0]
+    results = store.query(
+        query_embedding,
+        top_k=5,
+        range_filters={"start": (10, None)},
+    )
+    assert [chunk.chunk_id for chunk in results] == ["c2"]
+
+
 def test_inmemory_vectorstore_delete_by_doc_ids():
     embedder = HashingEmbedder(dims=4)
     store = InMemoryVectorStore()

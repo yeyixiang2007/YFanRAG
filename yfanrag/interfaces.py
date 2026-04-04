@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Iterable, List, Protocol, Sequence, runtime_checkable
+from typing import List, Protocol, Sequence, runtime_checkable
 
 from .models import Chunk, Document
+
+FieldFilters = dict[str, object]
+RangeFilter = tuple[float | int | None, float | int | None]
+RangeFilters = dict[str, RangeFilter]
 
 
 @runtime_checkable
@@ -30,7 +34,13 @@ class VectorStore(Protocol):
     def add(self, chunks: Sequence[Chunk], embeddings: Sequence[Sequence[float]]) -> None:
         """Persist chunks and embeddings into storage."""
 
-    def query(self, embedding: Sequence[float], top_k: int) -> List[Chunk]:
+    def query(
+        self,
+        embedding: Sequence[float],
+        top_k: int,
+        filters: FieldFilters | None = None,
+        range_filters: RangeFilters | None = None,
+    ) -> List[Chunk]:
         """Query similar chunks by vector embedding."""
 
     def delete_by_doc_ids(self, doc_ids: Sequence[str]) -> int:
@@ -39,5 +49,11 @@ class VectorStore(Protocol):
 
 @runtime_checkable
 class Retriever(Protocol):
-    def retrieve(self, query: str, top_k: int) -> List[Chunk]:
+    def retrieve(
+        self,
+        query: str,
+        top_k: int,
+        filters: FieldFilters | None = None,
+        range_filters: RangeFilters | None = None,
+    ) -> List[Chunk]:
         """Retrieve chunks for a query."""

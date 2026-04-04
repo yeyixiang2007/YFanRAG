@@ -39,6 +39,10 @@ class RetrievalConfig:
     use_fts: bool = False
     hybrid_alpha: float = 0.5
     score_norm: str = "minmax"
+    filters: Dict[str, Any] = field(default_factory=dict)
+    range_filters: Dict[str, tuple[float | int | None, float | int | None]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass

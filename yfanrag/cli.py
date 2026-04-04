@@ -14,6 +14,8 @@ from .retrievers import HybridRetriever
 from .vectorstores.memory import InMemoryVectorStore
 from .vectorstores.sqlite_vec import SqliteVecStore
 
+_NUMERIC_FILTER_FIELDS = {"start", "end", "index"}
+
 
 def _build_chunker(args: argparse.Namespace):
     if args.chunker == "recursive":
@@ -49,6 +51,45 @@ def _build_store(args: argparse.Namespace):
     )
 
 
+def _coerce_filter_value(key: str, raw: str) -> object:
+    if key in _NUMERIC_FILTER_FIELDS:
+        return int(raw)
+    return raw
+
+
+def _parse_query_filters(args: argparse.Namespace) -> tuple[dict[str, object], dict[str, tuple[float | int | None, float | int | None]]]:
+    filters: dict[str, object] = {}
+    range_filters: dict[str, tuple[float | int | None, float | int | None]] = {}
+
+    for item in getattr(args, "filters", []) or []:
+        if "=" not in item:
+            raise ValueError(f"invalid --filter format: {item}; expected key=value")
+        key, raw_value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError("filter key cannot be empty")
+        filters[key] = _coerce_filter_value(key, raw_value.strip())
+
+    for item in getattr(args, "ranges", []) or []:
+        parts = item.split(":")
+        if len(parts) != 3:
+            raise ValueError(
+                f"invalid --range format: {item}; expected key:min:max"
+            )
+        key, lower_raw, upper_raw = (part.strip() for part in parts)
+        if not key:
+            raise ValueError("range key cannot be empty")
+        if key not in _NUMERIC_FILTER_FIELDS:
+            raise ValueError(
+                f"range key must be one of {sorted(_NUMERIC_FILTER_FIELDS)}"
+            )
+        lower = int(lower_raw) if lower_raw else None
+        upper = int(upper_raw) if upper_raw else None
+        range_filters[key] = (lower, upper)
+
+    return filters, range_filters
+
+
 def cmd_ingest(args: argparse.Namespace) -> int:
     loader = TextFileLoader(paths=args.paths)
     docs = loader.load()
@@ -82,9 +123,15 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 def cmd_query(args: argparse.Namespace) -> int:
     embedder = _build_embedder(args)
     store = _build_store(args)
+    filters, range_filters = _parse_query_filters(args)
     try:
         embedding = embedder.embed([args.query])[0]
-        results = store.query(embedding, args.top_k)
+        results = store.query(
+            embedding,
+            args.top_k,
+            filters=filters or None,
+            range_filters=range_filters or None,
+        )
     finally:
         if hasattr(store, "close"):
             store.close()
@@ -122,6 +169,7 @@ def cmd_hybrid_query(args: argparse.Namespace) -> int:
     embedder = _build_embedder(args)
     store = _build_store(args)
     fts = SqliteFtsIndex(path=args.db)
+    filters, range_filters = _parse_query_filters(args)
     try:
         retriever = HybridRetriever(
             embedder=embedder,
@@ -135,6 +183,8 @@ def cmd_hybrid_query(args: argparse.Namespace) -> int:
             top_k=args.top_k,
             vector_top_k=args.vector_top_k,
             fts_top_k=args.fts_top_k,
+            filters=filters or None,
+            range_filters=range_filters or None,
         )
     finally:
         fts.close()
@@ -214,6 +264,20 @@ def build_parser() -> argparse.ArgumentParser:
     query.add_argument("--api-key-env")
     query.add_argument("--top-k", type=int, default=5)
     query.add_argument("--distance-metric", choices=["l2", "cosine"], default=None)
+    query.add_argument(
+        "--filter",
+        dest="filters",
+        action="append",
+        default=[],
+        help="Field equality filter, format key=value; repeatable",
+    )
+    query.add_argument(
+        "--range",
+        dest="ranges",
+        action="append",
+        default=[],
+        help="Numeric range filter, format key:min:max; min/max can be empty; repeatable",
+    )
     query.set_defaults(func=cmd_query)
 
     fts_query = sub.add_parser("fts-query", help="FTS5 query by text")
@@ -244,6 +308,20 @@ def build_parser() -> argparse.ArgumentParser:
     hybrid_query.add_argument("--alpha", type=float, default=0.5)
     hybrid_query.add_argument("--score-norm", choices=["minmax", "none"], default="minmax")
     hybrid_query.add_argument("--distance-metric", choices=["l2", "cosine"], default=None)
+    hybrid_query.add_argument(
+        "--filter",
+        dest="filters",
+        action="append",
+        default=[],
+        help="Field equality filter, format key=value; repeatable",
+    )
+    hybrid_query.add_argument(
+        "--range",
+        dest="ranges",
+        action="append",
+        default=[],
+        help="Numeric range filter, format key:min:max; min/max can be empty; repeatable",
+    )
     hybrid_query.set_defaults(func=cmd_hybrid_query)
 
     delete = sub.add_parser("delete", help="Delete by document id")

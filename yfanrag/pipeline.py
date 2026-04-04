@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, List, Sequence
 
-from .interfaces import Chunker, Embedder, VectorStore
+from .interfaces import Chunker, Embedder, FieldFilters, RangeFilters, VectorStore
 from .models import Chunk, Document
 
 
@@ -52,6 +52,17 @@ class SimplePipeline:
         vector_deleted = int(self.store.delete_by_doc_ids(ids))
         return {"vector_deleted": vector_deleted, "fts_deleted": fts_deleted}
 
-    def query(self, query_text: str, top_k: int = 5) -> List[Chunk]:
+    def query(
+        self,
+        query_text: str,
+        top_k: int = 5,
+        filters: FieldFilters | None = None,
+        range_filters: RangeFilters | None = None,
+    ) -> List[Chunk]:
         embedding = self.embedder.embed([query_text])[0]
-        return self.store.query(embedding, top_k)
+        return self.store.query(
+            embedding,
+            top_k,
+            filters=filters,
+            range_filters=range_filters,
+        )

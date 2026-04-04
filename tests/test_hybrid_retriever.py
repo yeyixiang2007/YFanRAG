@@ -76,6 +76,24 @@ def test_hybrid_retriever_vector_only_when_fts_empty():
     assert [chunk.chunk_id for chunk in results] == ["c1", "c2"]
 
 
+def test_hybrid_retriever_with_filters():
+    store = InMemoryVectorStore()
+    chunks = [
+        Chunk(chunk_id="c1", doc_id="d1", text="hello", start=0, end=5),
+        Chunk(chunk_id="c2", doc_id="d2", text="hello", start=6, end=11),
+    ]
+    store.add(chunks, [[1.0, 0.0], [1.0, 0.0]])
+
+    retriever = HybridRetriever(
+        embedder=DummyEmbedder([1.0, 0.0]),
+        vector_store=store,
+        fts_index=DummyFtsIndex([]),
+        alpha=0.5,
+    )
+    results = retriever.retrieve("query", top_k=5, filters={"doc_id": "d2"})
+    assert [chunk.chunk_id for chunk in results] == ["c2"]
+
+
 def test_hybrid_retriever_requires_valid_alpha():
     with pytest.raises(ValueError):
         HybridRetriever(
