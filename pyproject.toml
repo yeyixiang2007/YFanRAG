@@ -17,6 +17,9 @@ dev = [
 sqlite = [
     "sqlite-vec>=0.1.8",
 ]
+duckdb = [
+    "duckdb>=1.0.0",
+]
 
 [project.scripts]
 yfanrag = "yfanrag.cli:main"

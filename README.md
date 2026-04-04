@@ -55,10 +55,23 @@ pytest
 pip install -e .[sqlite]
 ```
 
+安装可选 DuckDB 后端：
+
+```powershell
+pip install -e .[duckdb]
+```
+
 文档入库（使用 sqlite-vec）：  
 
 ```powershell
 yfanrag ingest docs/ --db yfanrag.db --store sqlite-vec --enable-fts
+```
+
+文档入库（使用 sqlite-vec1 / duckdb-vss）：  
+
+```powershell
+yfanrag ingest docs/ --db yfanrag.db --store sqlite-vec1
+yfanrag ingest docs/ --db yfanrag.duckdb --store duckdb-vss --vss-persistent-index
 ```
 
 重复执行 `ingest` 时会按 `doc_id` 先删旧索引再写新索引（增量更新，不产生孤儿索引）。
@@ -97,6 +110,12 @@ yfanrag hybrid-query \"hello\" --db yfanrag.db --top-k 3 --alpha 0.5 --filter "d
 
 ```powershell
 yfanrag delete --db yfanrag.db --store sqlite-vec --doc-id "file:docs/TECHNICAL.md" --enable-fts
+```
+
+vec0 -> vec1 迁移：  
+
+```powershell
+yfanrag migrate-vec0-to-vec1 --db yfanrag.db --source-table vec_chunks
 ```
 
 Benchmark（质量 + 性能报告）：  

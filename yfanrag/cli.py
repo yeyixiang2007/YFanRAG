@@ -11,12 +11,16 @@ from .chunking import FixedChunker, RecursiveChunker
 from .embedders import HashingEmbedder, HttpEmbedder
 from .fts import SqliteFtsIndex
 from .loaders.text import TextFileLoader
+from .migrations import migrate_sqlite_vec0_to_vec1
 from .pipeline import SimplePipeline
 from .retrievers import HybridRetriever
+from .vectorstores.duckdb_vss import DuckDbVssStore
 from .vectorstores.memory import InMemoryVectorStore
 from .vectorstores.sqlite_vec import SqliteVecStore
+from .vectorstores.sqlite_vec1 import SqliteVec1Store
 
 _NUMERIC_FILTER_FIELDS = {"start", "end", "index"}
+_STORE_CHOICES = ["sqlite-vec", "sqlite-vec1", "duckdb-vss", "memory"]
 
 
 def _build_chunker(args: argparse.Namespace):
@@ -46,11 +50,30 @@ def _build_store(args: argparse.Namespace):
         return InMemoryVectorStore()
     dims = getattr(args, "dims", None)
     distance_metric = getattr(args, "distance_metric", None)
-    return SqliteVecStore(
-        path=args.db,
-        embedding_dim=dims,
-        distance_metric=distance_metric,
-    )
+    if args.store == "sqlite-vec":
+        return SqliteVecStore(
+            path=args.db,
+            embedding_dim=dims,
+            distance_metric=distance_metric,
+        )
+    if args.store == "sqlite-vec1":
+        return SqliteVec1Store(
+            path=args.db,
+            embedding_dim=dims,
+            distance_metric=distance_metric or "l2",
+            load_extension=not getattr(args, "disable_sqlite_extension", False),
+            extension_path=getattr(args, "sqlite_extension_path", None),
+        )
+    if args.store == "duckdb-vss":
+        return DuckDbVssStore(
+            path=args.db,
+            embedding_dim=dims,
+            distance_metric=distance_metric or "l2",
+            enable_vss=not getattr(args, "disable_vss_extension", False),
+            persistent_index=getattr(args, "vss_persistent_index", False),
+            fail_if_no_vss=False,
+        )
+    raise ValueError(f"unsupported store backend: {args.store}")
 
 
 def _coerce_filter_value(key: str, raw: str) -> object:
@@ -241,6 +264,26 @@ def cmd_delete(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_migrate_vec0_to_vec1(args: argparse.Namespace) -> int:
+    migrated = migrate_sqlite_vec0_to_vec1(
+        path=args.db,
+        source_table=args.source_table,
+        target_table=args.target_table,
+        target_index_table=args.target_index_table,
+        load_extension=not args.disable_sqlite_extension,
+        extension_path=args.sqlite_extension_path,
+    )
+    payload = {
+        "db": args.db,
+        "source_table": args.source_table,
+        "target_table": args.target_table,
+        "target_index_table": args.target_index_table,
+        "migrated_rows": migrated,
+    }
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0
+
+
 def cmd_benchmark(args: argparse.Namespace) -> int:
     cases = load_benchmark_cases(args.dataset)
     if args.case_limit is not None:
@@ -346,7 +389,7 @@ def build_parser() -> argparse.ArgumentParser:
     ingest = sub.add_parser("ingest", help="Ingest documents into the store")
     ingest.add_argument("paths", nargs="+", help="Paths to files or directories")
     ingest.add_argument("--db", default="yfanrag.db")
-    ingest.add_argument("--store", choices=["sqlite-vec", "memory"], default="sqlite-vec")
+    ingest.add_argument("--store", choices=_STORE_CHOICES, default="sqlite-vec")
     ingest.add_argument("--chunker", choices=["fixed", "recursive"], default="fixed")
     ingest.add_argument("--chunk-size", type=int, default=800)
     ingest.add_argument("--chunk-overlap", type=int, default=120)
@@ -357,6 +400,10 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--api-key-env")
     ingest.add_argument("--embed-batch-size", type=int, default=64)
     ingest.add_argument("--disable-embed-cache", action="store_true")
+    ingest.add_argument("--sqlite-extension-path", default=None)
+    ingest.add_argument("--disable-sqlite-extension", action="store_true")
+    ingest.add_argument("--disable-vss-extension", action="store_true")
+    ingest.add_argument("--vss-persistent-index", action="store_true")
     ingest.add_argument("--enable-fts", action="store_true")
     ingest.add_argument("--distance-metric", choices=["l2", "cosine"], default=None)
     ingest.set_defaults(func=cmd_ingest)
@@ -364,12 +411,16 @@ def build_parser() -> argparse.ArgumentParser:
     query = sub.add_parser("query", help="Vector search by query text")
     query.add_argument("query")
     query.add_argument("--db", default="yfanrag.db")
-    query.add_argument("--store", choices=["sqlite-vec", "memory"], default="sqlite-vec")
+    query.add_argument("--store", choices=_STORE_CHOICES, default="sqlite-vec")
     query.add_argument("--embedder", choices=["hashing", "http"], default="hashing")
     query.add_argument("--dims", type=int, default=8)
     query.add_argument("--endpoint")
     query.add_argument("--model")
     query.add_argument("--api-key-env")
+    query.add_argument("--sqlite-extension-path", default=None)
+    query.add_argument("--disable-sqlite-extension", action="store_true")
+    query.add_argument("--disable-vss-extension", action="store_true")
+    query.add_argument("--vss-persistent-index", action="store_true")
     query.add_argument("--top-k", type=int, default=5)
     query.add_argument("--distance-metric", choices=["l2", "cosine"], default=None)
     query.add_argument(
@@ -402,7 +453,7 @@ def build_parser() -> argparse.ArgumentParser:
     hybrid_query.add_argument("--db", default="yfanrag.db")
     hybrid_query.add_argument(
         "--store",
-        choices=["sqlite-vec", "memory"],
+        choices=_STORE_CHOICES,
         default="sqlite-vec",
     )
     hybrid_query.add_argument("--embedder", choices=["hashing", "http"], default="hashing")
@@ -410,6 +461,10 @@ def build_parser() -> argparse.ArgumentParser:
     hybrid_query.add_argument("--endpoint")
     hybrid_query.add_argument("--model")
     hybrid_query.add_argument("--api-key-env")
+    hybrid_query.add_argument("--sqlite-extension-path", default=None)
+    hybrid_query.add_argument("--disable-sqlite-extension", action="store_true")
+    hybrid_query.add_argument("--disable-vss-extension", action="store_true")
+    hybrid_query.add_argument("--vss-persistent-index", action="store_true")
     hybrid_query.add_argument("--top-k", type=int, default=5)
     hybrid_query.add_argument("--vector-top-k", type=int, default=None)
     hybrid_query.add_argument("--fts-top-k", type=int, default=None)
@@ -434,10 +489,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     delete = sub.add_parser("delete", help="Delete by document id")
     delete.add_argument("--db", default="yfanrag.db")
-    delete.add_argument("--store", choices=["sqlite-vec", "memory"], default="sqlite-vec")
+    delete.add_argument("--store", choices=_STORE_CHOICES, default="sqlite-vec")
+    delete.add_argument("--sqlite-extension-path", default=None)
+    delete.add_argument("--disable-sqlite-extension", action="store_true")
+    delete.add_argument("--disable-vss-extension", action="store_true")
+    delete.add_argument("--vss-persistent-index", action="store_true")
     delete.add_argument("--doc-id", action="append", required=True)
     delete.add_argument("--enable-fts", action="store_true")
     delete.set_defaults(func=cmd_delete)
+
+    migrate_vec = sub.add_parser(
+        "migrate-vec0-to-vec1",
+        help="Migrate sqlite-vec vec0 table rows into sqlite vec1 store",
+    )
+    migrate_vec.add_argument("--db", default="yfanrag.db")
+    migrate_vec.add_argument("--source-table", default="vec_chunks")
+    migrate_vec.add_argument("--target-table", default="vec1_chunks_data")
+    migrate_vec.add_argument("--target-index-table", default="vec1_chunks_index")
+    migrate_vec.add_argument("--sqlite-extension-path", default=None)
+    migrate_vec.add_argument("--disable-sqlite-extension", action="store_true")
+    migrate_vec.set_defaults(func=cmd_migrate_vec0_to_vec1)
 
     benchmark = sub.add_parser(
         "benchmark",
@@ -446,12 +517,16 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("dataset", help="Path to benchmark json/jsonl file")
     benchmark.add_argument("--mode", choices=["vector", "fts", "hybrid"], default="vector")
     benchmark.add_argument("--db", default="yfanrag.db")
-    benchmark.add_argument("--store", choices=["sqlite-vec", "memory"], default="sqlite-vec")
+    benchmark.add_argument("--store", choices=_STORE_CHOICES, default="sqlite-vec")
     benchmark.add_argument("--embedder", choices=["hashing", "http"], default="hashing")
     benchmark.add_argument("--dims", type=int, default=8)
     benchmark.add_argument("--endpoint")
     benchmark.add_argument("--model")
     benchmark.add_argument("--api-key-env")
+    benchmark.add_argument("--sqlite-extension-path", default=None)
+    benchmark.add_argument("--disable-sqlite-extension", action="store_true")
+    benchmark.add_argument("--disable-vss-extension", action="store_true")
+    benchmark.add_argument("--vss-persistent-index", action="store_true")
     benchmark.add_argument("--top-k", type=int, default=5)
     benchmark.add_argument("--case-limit", type=int, default=None)
     benchmark.add_argument("--output", default=None)

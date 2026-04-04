@@ -18,11 +18,14 @@ from .embedders import EmbedderFactory, HashingEmbedder, HttpEmbedder
 from .fts import FtsMatch, SqliteFtsIndex
 from .interfaces import Chunker, DocumentLoader, Embedder, Retriever, VectorStore
 from .loaders.text import TextFileLoader
+from .migrations import migrate_sqlite_vec0_to_vec1
 from .models import Chunk, Document
 from .pipeline import SimplePipeline
 from .retrievers import HybridHit, HybridRetriever
+from .vectorstores.duckdb_vss import DuckDbVssStore
 from .vectorstores.memory import InMemoryVectorStore
 from .vectorstores.sqlite_vec import SqliteVecStore
+from .vectorstores.sqlite_vec1 import SqliteVec1Store
 
 __all__ = [
     "Chunk",
@@ -47,6 +50,8 @@ __all__ = [
     "EmbedderFactory",
     "InMemoryVectorStore",
     "SqliteVecStore",
+    "SqliteVec1Store",
+    "DuckDbVssStore",
     "FtsMatch",
     "SqliteFtsIndex",
     "SimplePipeline",
@@ -54,4 +59,5 @@ __all__ = [
     "HybridRetriever",
     "load_benchmark_cases",
     "evaluate_retrieval_benchmark",
+    "migrate_sqlite_vec0_to_vec1",
 ]

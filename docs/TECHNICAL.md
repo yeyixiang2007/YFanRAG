@@ -127,6 +127,14 @@ flowchart LR
 - `vec0` 虚表支持辅助列（如 `+text`）与元数据列，适合将文本与向量放在同一表中。citeturn2view0
 - KNN 查询使用 `embedding MATCH ? AND k = ?` 语法，其中 `k` 控制 TopK。citeturn3view0
 - FTS5 通过 `MATCH` 语法进行全文检索，可与向量检索做混合召回。citeturn0search1
+- `SqliteVec1Store` 提供 `vec1` 优先 + 精确检索回退模式；当 `vec1` 扩展不可用时仍可用普通表完成写入与检索。
+- 提供 `migrate_sqlite_vec0_to_vec1()` 与 `yfanrag migrate-vec0-to-vec1` 用于从 `vec0` 表迁移到 `vec1` 适配层。
+
+**6.5 DuckDB VSS 适配**
+
+- `DuckDbVssStore` 提供 DuckDB 后端向量写入、检索与删除。
+- 默认尝试 `INSTALL vss; LOAD vss`，失败时可回退无索引检索（仍可功能可用）。
+- 支持 `--vss-persistent-index` 对应 DuckDB 持久化参数 `hnsw_enable_experimental_persistence`。
 
 **6.4 CLI**
 
@@ -138,6 +146,7 @@ flowchart LR
 - `yfanrag query` 与 `yfanrag hybrid-query` 支持 `--filter key=value` 与 `--range key:min:max`（字段过滤与范围过滤）。
 - `yfanrag ingest` 支持 `--embed-batch-size` 与 `--disable-embed-cache`。
 - `yfanrag benchmark`：读取 JSON/JSONL 评测集，输出质量指标（HitRate/MRR/Recall）与延迟统计（avg/p50/p95/max）。
+- `yfanrag migrate-vec0-to-vec1`：执行 `sqlite-vec(vec0)` 到 `vec1` 的数据迁移。
 
 **7. 开发任务表**
 
@@ -148,8 +157,8 @@ flowchart LR
 | T-003 | 分块策略模块 | 固定窗口与递归分块可用 | P0 | 已完成 |
 | T-004 | Embedding Provider 抽象 | 支持本地与 API 两类实现 | P0 | 已完成 |
 | T-005 | SQLite `sqlite-vec` 适配层 | 可建库、写入向量、TopK 检索 | P0 | 已完成 |
-| T-006 | SQLite `vec1` 适配层 | 可建索引与检索，含迁移策略 | P1 | 未开始 |
-| T-007 | DuckDB `vss` 适配层 | 可建索引与检索，含持久化配置 | P1 | 未开始 |
+| T-006 | SQLite `vec1` 适配层 | 可建索引与检索，含迁移策略 | P1 | 已完成 |
+| T-007 | DuckDB `vss` 适配层 | 可建索引与检索，含持久化配置 | P1 | 已完成 |
 | T-008 | FTS 适配层 | SQLite FTS5 与 DuckDB FTS 可用 | P1 | 已完成 |
 | T-009 | 混合检索融合器 | 向量+FTS 加权融合可用 | P1 | 已完成 |
 | T-010 | 增量更新与删除 | 文档更新不会产生孤儿索引 | P1 | 已完成 |
