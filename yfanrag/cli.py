@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 
 from .chunking import FixedChunker, RecursiveChunker
 from .embedders import HashingEmbedder, HttpEmbedder
@@ -41,10 +40,12 @@ def _build_embedder(args: argparse.Namespace):
 def _build_store(args: argparse.Namespace):
     if args.store == "memory":
         return InMemoryVectorStore()
+    dims = getattr(args, "dims", None)
+    distance_metric = getattr(args, "distance_metric", None)
     return SqliteVecStore(
         path=args.db,
-        embedding_dim=args.dims,
-        distance_metric=args.distance_metric,
+        embedding_dim=dims,
+        distance_metric=distance_metric,
     )
 
 
@@ -58,14 +59,19 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     chunker = _build_chunker(args)
     embedder = _build_embedder(args)
     store = _build_store(args)
-
-    pipeline = SimplePipeline(chunker=chunker, embedder=embedder, store=store)
-    chunks = pipeline.ingest(docs)
-
-    if args.enable_fts:
-        fts = SqliteFtsIndex(path=args.db)
-        fts.add(chunks)
-        fts.close()
+    try:
+        pipeline = SimplePipeline(chunker=chunker, embedder=embedder, store=store)
+        if args.enable_fts:
+            fts = SqliteFtsIndex(path=args.db)
+            try:
+                chunks = pipeline.upsert(docs, fts_index=fts)
+            finally:
+                fts.close()
+        else:
+            chunks = pipeline.upsert(docs)
+    finally:
+        if hasattr(store, "close"):
+            store.close()
 
     print(f"Ingested {len(chunks)} chunks from {len(docs)} documents.")
     if args.store == "memory":
@@ -76,9 +82,12 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 def cmd_query(args: argparse.Namespace) -> int:
     embedder = _build_embedder(args)
     store = _build_store(args)
-
-    embedding = embedder.embed([args.query])[0]
-    results = store.query(embedding, args.top_k)
+    try:
+        embedding = embedder.embed([args.query])[0]
+        results = store.query(embedding, args.top_k)
+    finally:
+        if hasattr(store, "close"):
+            store.close()
     for idx, chunk in enumerate(results, start=1):
         payload = {
             "rank": idx,
@@ -129,6 +138,8 @@ def cmd_hybrid_query(args: argparse.Namespace) -> int:
         )
     finally:
         fts.close()
+        if hasattr(store, "close"):
+            store.close()
 
     for idx, hit in enumerate(results, start=1):
         chunk = hit.chunk
@@ -144,6 +155,31 @@ def cmd_hybrid_query(args: argparse.Namespace) -> int:
             "text": chunk.text,
         }
         print(json.dumps(payload, ensure_ascii=False))
+    return 0
+
+
+def cmd_delete(args: argparse.Namespace) -> int:
+    store = _build_store(args)
+    try:
+        if args.enable_fts:
+            fts = SqliteFtsIndex(path=args.db)
+            try:
+                fts_deleted = fts.delete_by_doc_ids(args.doc_id)
+            finally:
+                fts.close()
+        else:
+            fts_deleted = 0
+        vector_deleted = store.delete_by_doc_ids(args.doc_id)
+    finally:
+        if hasattr(store, "close"):
+            store.close()
+
+    payload = {
+        "doc_ids": args.doc_id,
+        "vector_deleted": vector_deleted,
+        "fts_deleted": fts_deleted,
+    }
+    print(json.dumps(payload, ensure_ascii=False))
     return 0
 
 
@@ -209,6 +245,13 @@ def build_parser() -> argparse.ArgumentParser:
     hybrid_query.add_argument("--score-norm", choices=["minmax", "none"], default="minmax")
     hybrid_query.add_argument("--distance-metric", choices=["l2", "cosine"], default=None)
     hybrid_query.set_defaults(func=cmd_hybrid_query)
+
+    delete = sub.add_parser("delete", help="Delete by document id")
+    delete.add_argument("--db", default="yfanrag.db")
+    delete.add_argument("--store", choices=["sqlite-vec", "memory"], default="sqlite-vec")
+    delete.add_argument("--doc-id", action="append", required=True)
+    delete.add_argument("--enable-fts", action="store_true")
+    delete.set_defaults(func=cmd_delete)
 
     return parser
 

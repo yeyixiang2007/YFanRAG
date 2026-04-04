@@ -33,6 +33,9 @@ class VectorStore(Protocol):
     def query(self, embedding: Sequence[float], top_k: int) -> List[Chunk]:
         """Query similar chunks by vector embedding."""
 
+    def delete_by_doc_ids(self, doc_ids: Sequence[str]) -> int:
+        """Delete all chunks by document ids and return affected row count."""
+
 
 @runtime_checkable
 class Retriever(Protocol):

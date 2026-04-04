@@ -61,6 +61,8 @@ pip install -e .[sqlite]
 yfanrag ingest docs/ --db yfanrag.db --store sqlite-vec --enable-fts
 ```
 
+重复执行 `ingest` 时会按 `doc_id` 先删旧索引再写新索引（增量更新，不产生孤儿索引）。
+
 向量检索：  
 
 ```powershell
@@ -77,6 +79,12 @@ yfanrag fts-query \"hello\" --db yfanrag.db --top-k 3
 
 ```powershell
 yfanrag hybrid-query \"hello\" --db yfanrag.db --top-k 3 --alpha 0.5
+```
+
+按 `doc_id` 删除（含可选 FTS）：  
+
+```powershell
+yfanrag delete --db yfanrag.db --store sqlite-vec --doc-id "file:docs/TECHNICAL.md" --enable-fts
 ```
 
 **贡献**

@@ -31,3 +31,28 @@ def test_sqlite_vec_store_roundtrip(tmp_path):
 
     assert results
     assert results[0].chunk_id == "c1"
+
+
+@pytest.mark.skipif(
+    not hasattr(sqlite3.connect(":memory:"), "enable_load_extension"),
+    reason="SQLite extension loading is not supported",
+)
+def test_sqlite_vec_store_delete_by_doc_ids(tmp_path):
+    db_path = tmp_path / "vec_delete.db"
+    store = SqliteVecStore(path=str(db_path), embedding_dim=4)
+    chunks = [
+        Chunk(chunk_id="c1", doc_id="d1", text="hello", start=0, end=5),
+        Chunk(chunk_id="c2", doc_id="d2", text="world", start=6, end=11),
+    ]
+    embeddings = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+    ]
+    store.add(chunks, embeddings)
+
+    deleted = store.delete_by_doc_ids(["d1"])
+    results = store.query([1.0, 0.0, 0.0, 0.0], top_k=5)
+    store.close()
+
+    assert deleted == 1
+    assert all(chunk.doc_id != "d1" for chunk in results)

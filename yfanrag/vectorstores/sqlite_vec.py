@@ -88,6 +88,19 @@ class SqliteVecStore:
             )
         return results
 
+    def delete_by_doc_ids(self, doc_ids: Sequence[str]) -> int:
+        ids = [doc_id for doc_id in doc_ids if doc_id]
+        if not ids:
+            return 0
+        if not self._table_exists():
+            return 0
+
+        placeholders = ", ".join(["?"] * len(ids))
+        sql = f"DELETE FROM {self.table} WHERE doc_id IN ({placeholders})"
+        cursor = self._conn.execute(sql, ids)
+        self._conn.commit()
+        return cursor.rowcount
+
     def _load_extension(self) -> None:
         if sqlite_vec is None:
             raise RuntimeError(
@@ -125,6 +138,13 @@ class SqliteVecStore:
         )
         self._conn.execute(sql)
         self._conn.commit()
+
+    def _table_exists(self) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (self.table,),
+        ).fetchone()
+        return row is not None
 
     @staticmethod
     def _infer_dim(embeddings: Sequence[Sequence[float]]) -> int:

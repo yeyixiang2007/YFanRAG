@@ -133,6 +133,7 @@ flowchart LR
 - `yfanrag query`：向量检索（TopK）。
 - `yfanrag fts-query`：全文检索。
 - `yfanrag hybrid-query`：向量 + FTS 混合检索，支持 `alpha` 融合权重。
+- `yfanrag delete`：按 `doc_id` 删除向量与可选 FTS 索引数据。
 
 **7. 开发任务表**
 
@@ -147,7 +148,7 @@ flowchart LR
 | T-007 | DuckDB `vss` 适配层 | 可建索引与检索，含持久化配置 | P1 | 未开始 |
 | T-008 | FTS 适配层 | SQLite FTS5 与 DuckDB FTS 可用 | P1 | 已完成 |
 | T-009 | 混合检索融合器 | 向量+FTS 加权融合可用 | P1 | 已完成 |
-| T-010 | 增量更新与删除 | 文档更新不会产生孤儿索引 | P1 | 未开始 |
+| T-010 | 增量更新与删除 | 文档更新不会产生孤儿索引 | P1 | 已完成 |
 | T-011 | 元数据过滤 | 支持过滤字段与范围查询 | P1 | 未开始 |
 | T-012 | 批处理与缓存 | 支持批量 embedding 与写入 | P2 | 未开始 |
 | T-013 | CLI 原型 | 支持 ingest/query/rebuild | P2 | 已完成 |

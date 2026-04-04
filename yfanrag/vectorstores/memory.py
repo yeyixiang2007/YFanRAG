@@ -35,6 +35,25 @@ class InMemoryVectorStore:
         scored.sort(key=lambda item: item[0], reverse=True)
         return [chunk for _, chunk in scored[:top_k]]
 
+    def delete_by_doc_ids(self, doc_ids: Sequence[str]) -> int:
+        targets = set(doc_ids)
+        if not targets:
+            return 0
+
+        kept_chunks: List[Chunk] = []
+        kept_embeddings: List[List[float]] = []
+        deleted = 0
+        for chunk, embedding in zip(self.chunks, self.embeddings):
+            if chunk.doc_id in targets:
+                deleted += 1
+                continue
+            kept_chunks.append(chunk)
+            kept_embeddings.append(embedding)
+
+        self.chunks = kept_chunks
+        self.embeddings = kept_embeddings
+        return deleted
+
     @staticmethod
     def _dot(a: Sequence[float], b: Sequence[float]) -> float:
         return sum(x * y for x, y in zip(a, b))

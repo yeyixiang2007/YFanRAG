@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Sequence
 import sqlite3
 
 
@@ -59,6 +59,16 @@ class SqliteFtsIndex:
             )
             for row in rows
         ]
+
+    def delete_by_doc_ids(self, doc_ids: Sequence[str]) -> int:
+        ids = [doc_id for doc_id in doc_ids if doc_id]
+        if not ids:
+            return 0
+        placeholders = ", ".join(["?"] * len(ids))
+        sql = f"DELETE FROM {self.table} WHERE doc_id IN ({placeholders})"
+        cursor = self._conn.execute(sql, ids)
+        self._conn.commit()
+        return cursor.rowcount
 
     def _ensure_schema(self) -> None:
         try:

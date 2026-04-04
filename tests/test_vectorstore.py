@@ -24,3 +24,18 @@ def test_inmemory_vectorstore_query_top1():
     query_embedding = embedder.embed(["hello"])[0]
     results = store.query(query_embedding, top_k=1)
     assert results[0].chunk_id == "c1"
+
+
+def test_inmemory_vectorstore_delete_by_doc_ids():
+    embedder = HashingEmbedder(dims=4)
+    store = InMemoryVectorStore()
+
+    chunks = [
+        Chunk(chunk_id="c1", doc_id="d1", text="hello", start=0, end=5),
+        Chunk(chunk_id="c2", doc_id="d2", text="world", start=0, end=5),
+    ]
+    store.add(chunks, embedder.embed([chunk.text for chunk in chunks]))
+
+    deleted = store.delete_by_doc_ids(["d1"])
+    assert deleted == 1
+    assert [chunk.chunk_id for chunk in store.chunks] == ["c2"]
