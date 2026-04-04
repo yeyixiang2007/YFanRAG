@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Iterable, List, Sequence
+from time import perf_counter
 
 from .interfaces import Chunker, Embedder, FieldFilters, RangeFilters, VectorStore
 from .models import Chunk, Document
+from .observability import log_slow_query
 
 
 @dataclass
@@ -24,6 +26,7 @@ class SimplePipeline:
     )
 
     def ingest(self, documents: Iterable[Document]) -> List[Chunk]:
+        start_ts = perf_counter()
         all_chunks: List[Chunk] = []
         for document in documents:
             all_chunks.extend(self.chunker.chunk(document))
@@ -32,6 +35,8 @@ class SimplePipeline:
 
         embeddings = self._embed_texts([chunk.text for chunk in all_chunks])
         self.store.add(all_chunks, embeddings)
+        elapsed_ms = (perf_counter() - start_ts) * 1000.0
+        log_slow_query("SimplePipeline.ingest", elapsed_ms, f"chunks={len(all_chunks)}")
         return all_chunks
 
     def upsert(self, documents: Iterable[Document], fts_index: object | None = None) -> List[Chunk]:
@@ -69,13 +74,17 @@ class SimplePipeline:
         filters: FieldFilters | None = None,
         range_filters: RangeFilters | None = None,
     ) -> List[Chunk]:
+        start_ts = perf_counter()
         embedding = self.embedder.embed([query_text])[0]
-        return self.store.query(
+        result = self.store.query(
             embedding,
             top_k,
             filters=filters,
             range_filters=range_filters,
         )
+        elapsed_ms = (perf_counter() - start_ts) * 1000.0
+        log_slow_query("SimplePipeline.query", elapsed_ms, f"rows={len(result)}")
+        return result
 
     def clear_embedding_cache(self) -> None:
         self._embedding_cache.clear()

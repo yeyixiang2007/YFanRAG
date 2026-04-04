@@ -9,6 +9,7 @@ from typing import Iterable, List, Sequence
 
 from .base import BaseLoader
 from ..models import Document
+from ..security import ensure_path_in_whitelist, whitelist_from_env
 
 
 @dataclass
@@ -16,6 +17,7 @@ class TextFileLoader(BaseLoader):
     paths: Sequence[str]
     encoding: str = "utf-8"
     allow_extensions: Sequence[str] = (".txt", ".md")
+    path_whitelist: Sequence[str] | None = None
 
     def load(self) -> List[Document]:
         documents: List[Document] = []
@@ -39,8 +41,12 @@ class TextFileLoader(BaseLoader):
 
     def _iter_paths(self) -> Iterable[Path]:
         allow = {ext.lower() for ext in self.allow_extensions}
+        whitelist = list(self.path_whitelist or [])
+        if not whitelist:
+            whitelist = whitelist_from_env("YFANRAG_PATH_WHITELIST")
         for raw in self.paths:
             path = Path(raw)
+            ensure_path_in_whitelist(path, whitelist, label="loader path")
             if path.is_dir():
                 yield from self._iter_dir(path, allow)
             elif path.is_file() and path.suffix.lower() in allow:

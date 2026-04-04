@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Sequence
 import sqlite3
+from time import perf_counter
 
 from ..interfaces import FieldFilters, RangeFilters
 from ..models import Chunk
+from ..observability import log_slow_query
 
 try:
     import sqlite_vec
@@ -105,6 +107,7 @@ class SqliteVecStore:
         filters: FieldFilters | None = None,
         range_filters: RangeFilters | None = None,
     ) -> List[Chunk]:
+        start_ts = perf_counter()
         if top_k <= 0:
             return []
         dim = len(embedding)
@@ -152,6 +155,8 @@ class SqliteVecStore:
                     metadata=metadata,
                 )
             )
+        elapsed_ms = (perf_counter() - start_ts) * 1000.0
+        log_slow_query("SqliteVecStore.query", elapsed_ms, f"rows={len(results)}")
         return results
 
     def delete_by_doc_ids(self, doc_ids: Sequence[str]) -> int:

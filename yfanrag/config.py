@@ -32,6 +32,9 @@ class StorageConfig:
     vector_extension: Optional[str] = "sqlite-vec"
     enable_fts: bool = True
     fts_backend: Optional[str] = "fts5"
+    path_whitelist: list[str] = field(default_factory=list)
+    extension_whitelist: list[str] = field(default_factory=list)
+    slow_query_ms: float = 200.0
 
 
 @dataclass

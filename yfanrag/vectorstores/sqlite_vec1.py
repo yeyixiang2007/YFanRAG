@@ -8,9 +8,12 @@ import json
 import math
 import sqlite3
 import struct
+from time import perf_counter
 
 from ..interfaces import FieldFilters, RangeFilters
 from ..models import Chunk
+from ..observability import log_slow_query
+from ..security import ensure_path_in_whitelist, whitelist_from_env
 
 
 @dataclass
@@ -22,6 +25,7 @@ class SqliteVec1Store:
     distance_metric: str = "l2"
     load_extension: bool = True
     extension_path: str | None = None
+    extension_whitelist: Sequence[str] | None = None
 
     _conn: sqlite3.Connection = field(init=False, repr=False)
     _vec1_enabled: bool = field(init=False, default=False, repr=False)
@@ -93,6 +97,7 @@ class SqliteVec1Store:
         filters: FieldFilters | None = None,
         range_filters: RangeFilters | None = None,
     ) -> List[Chunk]:
+        start_ts = perf_counter()
         if top_k <= 0:
             return []
         if self.embedding_dim is None:
@@ -106,13 +111,19 @@ class SqliteVec1Store:
             try:
                 ids = self._query_vec1_rowids(embedding, top_k, filters, range_filters)
                 if ids:
-                    return self._load_chunks_by_ids(ids, embedding)
+                    result = self._load_chunks_by_ids(ids, embedding)
+                    elapsed_ms = (perf_counter() - start_ts) * 1000.0
+                    log_slow_query("SqliteVec1Store.query", elapsed_ms, f"rows={len(result)}")
+                    return result
             except sqlite3.Error:
                 # If vec1 query shape changes or extension is unavailable at runtime,
                 # continue with deterministic exact search fallback.
                 pass
 
-        return self._query_exhaustive(embedding, top_k, filters, range_filters)
+        result = self._query_exhaustive(embedding, top_k, filters, range_filters)
+        elapsed_ms = (perf_counter() - start_ts) * 1000.0
+        log_slow_query("SqliteVec1Store.query", elapsed_ms, f"rows={len(result)}")
+        return result
 
     def delete_by_doc_ids(self, doc_ids: Sequence[str]) -> int:
         ids = [doc_id for doc_id in doc_ids if doc_id]
@@ -157,6 +168,14 @@ class SqliteVec1Store:
         try:
             self._conn.enable_load_extension(True)
             if self.extension_path:
+                whitelist = list(self.extension_whitelist or [])
+                if not whitelist:
+                    whitelist = whitelist_from_env("YFANRAG_EXTENSION_WHITELIST")
+                ensure_path_in_whitelist(
+                    self.extension_path,
+                    whitelist,
+                    label="sqlite extension path",
+                )
                 self._conn.load_extension(self.extension_path)
             else:
                 self._conn.load_extension("vec1")

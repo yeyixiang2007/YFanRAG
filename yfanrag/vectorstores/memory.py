@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Sequence
 import math
+from time import perf_counter
 
 from ..interfaces import FieldFilters, RangeFilters
 from ..models import Chunk
+from ..observability import log_slow_query
 
 
 @dataclass
@@ -29,6 +31,7 @@ class InMemoryVectorStore:
         filters: FieldFilters | None = None,
         range_filters: RangeFilters | None = None,
     ) -> List[Chunk]:
+        start_ts = perf_counter()
         if not self.embeddings:
             return []
         query_norm = self._norm(embedding)
@@ -42,7 +45,10 @@ class InMemoryVectorStore:
             score = self._dot(embedding, stored) / (query_norm * self._norm(stored))
             scored.append((score, chunk))
         scored.sort(key=lambda item: item[0], reverse=True)
-        return [chunk for _, chunk in scored[:top_k]]
+        result = [chunk for _, chunk in scored[:top_k]]
+        elapsed_ms = (perf_counter() - start_ts) * 1000.0
+        log_slow_query("InMemoryVectorStore.query", elapsed_ms, f"rows={len(self.chunks)}")
+        return result
 
     def delete_by_doc_ids(self, doc_ids: Sequence[str]) -> int:
         targets = set(doc_ids)

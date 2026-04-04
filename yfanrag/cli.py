@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from .benchmark import RetrievalItem, evaluate_retrieval_benchmark, load_benchmark_cases
@@ -11,7 +12,12 @@ from .chunking import FixedChunker, RecursiveChunker
 from .embedders import HashingEmbedder, HttpEmbedder
 from .fts import SqliteFtsIndex
 from .loaders.text import TextFileLoader
-from .migrations import migrate_sqlite_vec0_to_vec1
+from .migrations import (
+    migrate_duckdb_vss_to_sqlite_vec1,
+    migrate_sqlite_vec0_to_vec1,
+    migrate_sqlite_vec1_to_duckdb_vss,
+)
+from .observability import configure_logging
 from .pipeline import SimplePipeline
 from .retrievers import HybridRetriever
 from .vectorstores.duckdb_vss import DuckDbVssStore
@@ -63,6 +69,7 @@ def _build_store(args: argparse.Namespace):
             distance_metric=distance_metric or "l2",
             load_extension=not getattr(args, "disable_sqlite_extension", False),
             extension_path=getattr(args, "sqlite_extension_path", None),
+            extension_whitelist=getattr(args, "extension_whitelist", None),
         )
     if args.store == "duckdb-vss":
         return DuckDbVssStore(
@@ -116,7 +123,10 @@ def _parse_query_filters(args: argparse.Namespace) -> tuple[dict[str, object], d
 
 
 def cmd_ingest(args: argparse.Namespace) -> int:
-    loader = TextFileLoader(paths=args.paths)
+    loader = TextFileLoader(
+        paths=args.paths,
+        path_whitelist=args.path_whitelist or None,
+    )
     docs = loader.load()
     if not docs:
         print("No documents found.")
@@ -272,12 +282,46 @@ def cmd_migrate_vec0_to_vec1(args: argparse.Namespace) -> int:
         target_index_table=args.target_index_table,
         load_extension=not args.disable_sqlite_extension,
         extension_path=args.sqlite_extension_path,
+        extension_whitelist=args.extension_whitelist or None,
     )
     payload = {
         "db": args.db,
         "source_table": args.source_table,
         "target_table": args.target_table,
         "target_index_table": args.target_index_table,
+        "migrated_rows": migrated,
+    }
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0
+
+
+def cmd_migrate_sqlite_duckdb(args: argparse.Namespace) -> int:
+    direction = args.direction
+    if direction == "sqlite-to-duckdb":
+        migrated = migrate_sqlite_vec1_to_duckdb_vss(
+            sqlite_path=args.sqlite_db,
+            duckdb_path=args.duckdb_db,
+            source_table=args.sqlite_table,
+            target_table=args.duckdb_table,
+            enable_vss=not args.disable_vss_extension,
+            persistent_index=args.vss_persistent_index,
+        )
+    else:
+        migrated = migrate_duckdb_vss_to_sqlite_vec1(
+            duckdb_path=args.duckdb_db,
+            sqlite_path=args.sqlite_db,
+            source_table=args.duckdb_table,
+            target_table=args.sqlite_table,
+            target_index_table=args.sqlite_index_table,
+            load_extension=not args.disable_sqlite_extension,
+            extension_path=args.sqlite_extension_path,
+            extension_whitelist=args.extension_whitelist or None,
+        )
+
+    payload = {
+        "direction": direction,
+        "sqlite_db": args.sqlite_db,
+        "duckdb_db": args.duckdb_db,
         "migrated_rows": migrated,
     }
     print(json.dumps(payload, ensure_ascii=False))
@@ -384,10 +428,23 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="yfanrag")
+    parser.add_argument("--log-level", default=None, help="Logging level, e.g. INFO/DEBUG")
+    parser.add_argument(
+        "--slow-query-ms",
+        type=float,
+        default=None,
+        help="Slow-query warning threshold in milliseconds",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     ingest = sub.add_parser("ingest", help="Ingest documents into the store")
     ingest.add_argument("paths", nargs="+", help="Paths to files or directories")
+    ingest.add_argument(
+        "--path-whitelist",
+        action="append",
+        default=[],
+        help="Allowed root path for ingestion, repeatable",
+    )
     ingest.add_argument("--db", default="yfanrag.db")
     ingest.add_argument("--store", choices=_STORE_CHOICES, default="sqlite-vec")
     ingest.add_argument("--chunker", choices=["fixed", "recursive"], default="fixed")
@@ -401,6 +458,12 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--embed-batch-size", type=int, default=64)
     ingest.add_argument("--disable-embed-cache", action="store_true")
     ingest.add_argument("--sqlite-extension-path", default=None)
+    ingest.add_argument(
+        "--extension-whitelist",
+        action="append",
+        default=[],
+        help="Allowed sqlite extension root path, repeatable",
+    )
     ingest.add_argument("--disable-sqlite-extension", action="store_true")
     ingest.add_argument("--disable-vss-extension", action="store_true")
     ingest.add_argument("--vss-persistent-index", action="store_true")
@@ -418,6 +481,12 @@ def build_parser() -> argparse.ArgumentParser:
     query.add_argument("--model")
     query.add_argument("--api-key-env")
     query.add_argument("--sqlite-extension-path", default=None)
+    query.add_argument(
+        "--extension-whitelist",
+        action="append",
+        default=[],
+        help="Allowed sqlite extension root path, repeatable",
+    )
     query.add_argument("--disable-sqlite-extension", action="store_true")
     query.add_argument("--disable-vss-extension", action="store_true")
     query.add_argument("--vss-persistent-index", action="store_true")
@@ -462,6 +531,12 @@ def build_parser() -> argparse.ArgumentParser:
     hybrid_query.add_argument("--model")
     hybrid_query.add_argument("--api-key-env")
     hybrid_query.add_argument("--sqlite-extension-path", default=None)
+    hybrid_query.add_argument(
+        "--extension-whitelist",
+        action="append",
+        default=[],
+        help="Allowed sqlite extension root path, repeatable",
+    )
     hybrid_query.add_argument("--disable-sqlite-extension", action="store_true")
     hybrid_query.add_argument("--disable-vss-extension", action="store_true")
     hybrid_query.add_argument("--vss-persistent-index", action="store_true")
@@ -491,6 +566,12 @@ def build_parser() -> argparse.ArgumentParser:
     delete.add_argument("--db", default="yfanrag.db")
     delete.add_argument("--store", choices=_STORE_CHOICES, default="sqlite-vec")
     delete.add_argument("--sqlite-extension-path", default=None)
+    delete.add_argument(
+        "--extension-whitelist",
+        action="append",
+        default=[],
+        help="Allowed sqlite extension root path, repeatable",
+    )
     delete.add_argument("--disable-sqlite-extension", action="store_true")
     delete.add_argument("--disable-vss-extension", action="store_true")
     delete.add_argument("--vss-persistent-index", action="store_true")
@@ -507,8 +588,40 @@ def build_parser() -> argparse.ArgumentParser:
     migrate_vec.add_argument("--target-table", default="vec1_chunks_data")
     migrate_vec.add_argument("--target-index-table", default="vec1_chunks_index")
     migrate_vec.add_argument("--sqlite-extension-path", default=None)
+    migrate_vec.add_argument(
+        "--extension-whitelist",
+        action="append",
+        default=[],
+        help="Allowed sqlite extension root path, repeatable",
+    )
     migrate_vec.add_argument("--disable-sqlite-extension", action="store_true")
     migrate_vec.set_defaults(func=cmd_migrate_vec0_to_vec1)
+
+    migrate_cross = sub.add_parser(
+        "migrate-sqlite-duckdb",
+        help="Migrate vector data between sqlite(vec1) and duckdb(vss)",
+    )
+    migrate_cross.add_argument(
+        "--direction",
+        choices=["sqlite-to-duckdb", "duckdb-to-sqlite"],
+        required=True,
+    )
+    migrate_cross.add_argument("--sqlite-db", default="yfanrag.db")
+    migrate_cross.add_argument("--duckdb-db", default="yfanrag.duckdb")
+    migrate_cross.add_argument("--sqlite-table", default="vec1_chunks_data")
+    migrate_cross.add_argument("--sqlite-index-table", default="vec1_chunks_index")
+    migrate_cross.add_argument("--duckdb-table", default="vss_chunks")
+    migrate_cross.add_argument("--sqlite-extension-path", default=None)
+    migrate_cross.add_argument(
+        "--extension-whitelist",
+        action="append",
+        default=[],
+        help="Allowed sqlite extension root path, repeatable",
+    )
+    migrate_cross.add_argument("--disable-sqlite-extension", action="store_true")
+    migrate_cross.add_argument("--disable-vss-extension", action="store_true")
+    migrate_cross.add_argument("--vss-persistent-index", action="store_true")
+    migrate_cross.set_defaults(func=cmd_migrate_sqlite_duckdb)
 
     benchmark = sub.add_parser(
         "benchmark",
@@ -524,6 +637,12 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--model")
     benchmark.add_argument("--api-key-env")
     benchmark.add_argument("--sqlite-extension-path", default=None)
+    benchmark.add_argument(
+        "--extension-whitelist",
+        action="append",
+        default=[],
+        help="Allowed sqlite extension root path, repeatable",
+    )
     benchmark.add_argument("--disable-sqlite-extension", action="store_true")
     benchmark.add_argument("--disable-vss-extension", action="store_true")
     benchmark.add_argument("--vss-persistent-index", action="store_true")
@@ -557,6 +676,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.slow_query_ms is not None:
+        os.environ["YFANRAG_SLOW_QUERY_MS"] = str(args.slow_query_ms)
+    configure_logging(args.log_level)
     return args.func(args)
 
 

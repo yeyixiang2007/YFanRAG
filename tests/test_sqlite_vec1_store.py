@@ -35,3 +35,22 @@ def test_sqlite_vec1_store_roundtrip_without_extension(tmp_path):
     assert [chunk.chunk_id for chunk in by_range] == ["c2"]
     assert deleted == 1
     assert all(chunk.doc_id != "d1" for chunk in remaining)
+
+
+def test_sqlite_vec1_store_extension_path_whitelist(tmp_path):
+    db_path = tmp_path / "vec1_security.db"
+    fake_ext = tmp_path / "ext" / "vec1.so"
+    fake_ext.parent.mkdir(parents=True, exist_ok=True)
+    fake_ext.write_text("", encoding="utf-8")
+
+    try:
+        SqliteVec1Store(
+            path=str(db_path),
+            load_extension=True,
+            extension_path=str(fake_ext),
+            extension_whitelist=[str(tmp_path / "another")],
+        )
+    except ValueError as exc:
+        assert "sqlite extension path is not in whitelist" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for extension whitelist")

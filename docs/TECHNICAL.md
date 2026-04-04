@@ -136,9 +136,26 @@ flowchart LR
 - 默认尝试 `INSTALL vss; LOAD vss`，失败时可回退无索引检索（仍可功能可用）。
 - 支持 `--vss-persistent-index` 对应 DuckDB 持久化参数 `hnsw_enable_experimental_persistence`。
 
+**6.6 迁移与兼容**
+
+- 提供 `migrate_sqlite_vec0_to_vec1()` 与 `yfanrag migrate-vec0-to-vec1` 迁移入口。
+- 提供 `migrate_sqlite_vec1_to_duckdb_vss()` / `migrate_duckdb_vss_to_sqlite_vec1()` 与 `yfanrag migrate-sqlite-duckdb` 双向迁移命令。
+
+**6.7 观测与日志**
+
+- 统一日志入口 `yfanrag.observability`，支持环境变量 `YFANRAG_LOG_LEVEL` 与 `YFANRAG_SLOW_QUERY_MS`。
+- 在 pipeline、向量检索与 FTS 检索路径提供慢查询告警提示。
+
+**6.8 安全与隔离**
+
+- `TextFileLoader` 支持路径白名单（参数或 `YFANRAG_PATH_WHITELIST`）。
+- `SqliteVec1Store` 支持扩展路径白名单（参数或 `YFANRAG_EXTENSION_WHITELIST`）。
+- CLI 支持 `--path-whitelist`、`--extension-whitelist`，限制读路径与扩展加载路径。
+
 **6.4 CLI**
 
 - `yfanrag ingest`：文档入库，支持 `sqlite-vec` 与 `memory` 后端，支持 FTS 建索引。
+- `yfanrag ingest`：文档入库，支持 `sqlite-vec` / `sqlite-vec1` / `duckdb-vss` / `memory` 后端，支持 FTS 建索引。
 - `yfanrag query`：向量检索（TopK）。
 - `yfanrag fts-query`：全文检索。
 - `yfanrag hybrid-query`：向量 + FTS 混合检索，支持 `alpha` 融合权重。
@@ -147,6 +164,7 @@ flowchart LR
 - `yfanrag ingest` 支持 `--embed-batch-size` 与 `--disable-embed-cache`。
 - `yfanrag benchmark`：读取 JSON/JSONL 评测集，输出质量指标（HitRate/MRR/Recall）与延迟统计（avg/p50/p95/max）。
 - `yfanrag migrate-vec0-to-vec1`：执行 `sqlite-vec(vec0)` 到 `vec1` 的数据迁移。
+- `yfanrag migrate-sqlite-duckdb`：执行 SQLite(vec1) 与 DuckDB(vss) 双向迁移。
 
 **7. 开发任务表**
 
@@ -167,11 +185,11 @@ flowchart LR
 | T-013 | CLI 原型 | 支持 ingest/query/rebuild | P2 | 已完成 |
 | T-014 | 测试体系 | 单元与集成测试覆盖核心路径 | P1 | 已完成 |
 | T-015 | Benchmark 与评估脚本 | 可生成检索质量与性能报告 | P2 | 已完成 |
-| T-016 | 示例与教程 | 至少 3 个可运行示例 | P2 | 未开始 |
-| T-017 | 版本与发布流程 | tag、changelog、发布脚本 | P2 | 未开始 |
-| T-018 | 迁移与兼容策略 | SQLite 与 DuckDB 数据可迁移 | P2 | 未开始 |
-| T-019 | 观测与日志 | 提供统一日志与慢查询提示 | P2 | 未开始 |
-| T-020 | 安全与隔离 | 限制扩展加载与路径白名单 | P2 | 未开始 |
+| T-016 | 示例与教程 | 至少 3 个可运行示例 | P2 | 已完成 |
+| T-017 | 版本与发布流程 | tag、changelog、发布脚本 | P2 | 已完成 |
+| T-018 | 迁移与兼容策略 | SQLite 与 DuckDB 数据可迁移 | P2 | 已完成 |
+| T-019 | 观测与日志 | 提供统一日志与慢查询提示 | P2 | 已完成 |
+| T-020 | 安全与隔离 | 限制扩展加载与路径白名单 | P2 | 已完成 |
 | T-021 | 最小闭环 | 可完成 ingest -> query 的端到端最小流程 | P0 | 已完成 |
 | T-022 | 开发环境 | 提供虚拟环境与测试运行说明 | P1 | 已完成 |
 

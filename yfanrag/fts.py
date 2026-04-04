@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Sequence
 import sqlite3
+from time import perf_counter
+
+from .observability import log_slow_query
 
 
 @dataclass(frozen=True)
@@ -41,6 +44,7 @@ class SqliteFtsIndex:
         self._conn.commit()
 
     def query(self, query: str, top_k: int = 5) -> List[FtsMatch]:
+        start_ts = perf_counter()
         if top_k <= 0:
             return []
         sql = (
@@ -50,7 +54,7 @@ class SqliteFtsIndex:
             "ORDER BY score LIMIT ?"
         )
         rows = self._conn.execute(sql, (query, top_k)).fetchall()
-        return [
+        results = [
             FtsMatch(
                 chunk_id=row["chunk_id"],
                 doc_id=row["doc_id"],
@@ -59,6 +63,9 @@ class SqliteFtsIndex:
             )
             for row in rows
         ]
+        elapsed_ms = (perf_counter() - start_ts) * 1000.0
+        log_slow_query("SqliteFtsIndex.query", elapsed_ms, f"rows={len(results)}")
+        return results
 
     def delete_by_doc_ids(self, doc_ids: Sequence[str]) -> int:
         ids = [doc_id for doc_id in doc_ids if doc_id]
