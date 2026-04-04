@@ -18,6 +18,16 @@ class DummyFtsIndex:
         return len(doc_ids)
 
 
+class CountingEmbedder:
+    def __init__(self):
+        self.calls = []
+
+    def embed(self, texts):
+        batch = list(texts)
+        self.calls.append(batch)
+        return [[float(len(text))] for text in batch]
+
+
 def test_pipeline_minimal_loop():
     doc = Document(doc_id="doc-1", text="hello yfanrag")
     pipeline = SimplePipeline(
@@ -85,3 +95,46 @@ def test_pipeline_delete_removes_doc_chunks():
     stats = pipeline.delete(doc_ids=["doc-1"])
     assert stats == {"vector_deleted": 1, "fts_deleted": 0}
     assert store.chunks == []
+
+
+def test_pipeline_ingest_batches_embeddings():
+    embedder = CountingEmbedder()
+    store = InMemoryVectorStore()
+    pipeline = SimplePipeline(
+        chunker=FixedChunker(chunk_size=2, chunk_overlap=0),
+        embedder=embedder,
+        store=store,
+        embed_batch_size=2,
+        use_embedding_cache=False,
+    )
+    docs = [
+        Document(doc_id="doc-1", text="abcd"),
+        Document(doc_id="doc-2", text="efgh"),
+    ]
+
+    chunks = pipeline.ingest(docs)
+    assert len(chunks) == 4
+    assert len(embedder.calls) == 2
+    assert all(len(batch) <= 2 for batch in embedder.calls)
+
+
+def test_pipeline_ingest_uses_embedding_cache():
+    embedder = CountingEmbedder()
+    pipeline = SimplePipeline(
+        chunker=FixedChunker(chunk_size=50, chunk_overlap=0),
+        embedder=embedder,
+        store=InMemoryVectorStore(),
+        embed_batch_size=16,
+        use_embedding_cache=True,
+    )
+
+    docs = [
+        Document(doc_id="doc-1", text="hello"),
+        Document(doc_id="doc-2", text="hello"),
+    ]
+    pipeline.ingest(docs)
+    assert sum(len(batch) for batch in embedder.calls) == 1
+
+    calls_before = len(embedder.calls)
+    pipeline.ingest([Document(doc_id="doc-3", text="hello")])
+    assert len(embedder.calls) == calls_before

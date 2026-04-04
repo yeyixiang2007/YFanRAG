@@ -101,7 +101,13 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     embedder = _build_embedder(args)
     store = _build_store(args)
     try:
-        pipeline = SimplePipeline(chunker=chunker, embedder=embedder, store=store)
+        pipeline = SimplePipeline(
+            chunker=chunker,
+            embedder=embedder,
+            store=store,
+            embed_batch_size=args.embed_batch_size,
+            use_embedding_cache=not args.disable_embed_cache,
+        )
         if args.enable_fts:
             fts = SqliteFtsIndex(path=args.db)
             try:
@@ -249,6 +255,8 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--endpoint")
     ingest.add_argument("--model")
     ingest.add_argument("--api-key-env")
+    ingest.add_argument("--embed-batch-size", type=int, default=64)
+    ingest.add_argument("--disable-embed-cache", action="store_true")
     ingest.add_argument("--enable-fts", action="store_true")
     ingest.add_argument("--distance-metric", choices=["l2", "cosine"], default=None)
     ingest.set_defaults(func=cmd_ingest)

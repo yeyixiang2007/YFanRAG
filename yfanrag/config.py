@@ -20,6 +20,7 @@ class EmbeddingConfig:
     model: Optional[str] = None
     dims: Optional[int] = None
     batch_size: int = 64
+    cache_embeddings: bool = True
     endpoint: Optional[str] = None
     api_key_env: Optional[str] = None
 

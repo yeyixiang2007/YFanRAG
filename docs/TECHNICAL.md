@@ -119,6 +119,7 @@ flowchart LR
 
 - 本地实现：基于 `HashingEmbedder` 的确定性向量，适用于测试与示例。
 - API 实现：`HttpEmbedder` 通过 HTTP POST 调用外部服务，默认请求体为 `{\"texts\": [...]}`，响应支持 `{\"embeddings\": [...]}` 或 `{\"data\": [{\"embedding\": ...}]}` 两种格式。
+- Pipeline 支持 embedding 批处理与内存缓存：`embed_batch_size` 控制每批请求量，重复文本默认命中缓存以减少重复计算。
 
 **6.3 SQLite 向量与 FTS 适配**
 
@@ -135,6 +136,7 @@ flowchart LR
 - `yfanrag hybrid-query`：向量 + FTS 混合检索，支持 `alpha` 融合权重。
 - `yfanrag delete`：按 `doc_id` 删除向量与可选 FTS 索引数据。
 - `yfanrag query` 与 `yfanrag hybrid-query` 支持 `--filter key=value` 与 `--range key:min:max`（字段过滤与范围过滤）。
+- `yfanrag ingest` 支持 `--embed-batch-size` 与 `--disable-embed-cache`。
 
 **7. 开发任务表**
 
@@ -151,7 +153,7 @@ flowchart LR
 | T-009 | 混合检索融合器 | 向量+FTS 加权融合可用 | P1 | 已完成 |
 | T-010 | 增量更新与删除 | 文档更新不会产生孤儿索引 | P1 | 已完成 |
 | T-011 | 元数据过滤 | 支持过滤字段与范围查询 | P1 | 已完成 |
-| T-012 | 批处理与缓存 | 支持批量 embedding 与写入 | P2 | 未开始 |
+| T-012 | 批处理与缓存 | 支持批量 embedding 与写入 | P2 | 已完成 |
 | T-013 | CLI 原型 | 支持 ingest/query/rebuild | P2 | 已完成 |
 | T-014 | 测试体系 | 单元与集成测试覆盖核心路径 | P1 | 已完成 |
 | T-015 | Benchmark 与评估脚本 | 可生成检索质量与性能报告 | P2 | 未开始 |

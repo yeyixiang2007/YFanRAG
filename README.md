@@ -63,6 +63,12 @@ yfanrag ingest docs/ --db yfanrag.db --store sqlite-vec --enable-fts
 
 重复执行 `ingest` 时会按 `doc_id` 先删旧索引再写新索引（增量更新，不产生孤儿索引）。
 
+批处理与缓存可通过参数调整：  
+
+```powershell
+yfanrag ingest docs/ --db yfanrag.db --store sqlite-vec --embed-batch-size 128
+```
+
 向量检索：  
 
 ```powershell

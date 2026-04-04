@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable, List, Sequence
 
 from .interfaces import Chunker, Embedder, FieldFilters, RangeFilters, VectorStore
@@ -14,14 +14,24 @@ class SimplePipeline:
     chunker: Chunker
     embedder: Embedder
     store: VectorStore
+    embed_batch_size: int = 64
+    use_embedding_cache: bool = True
+
+    _embedding_cache: dict[str, list[float]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
 
     def ingest(self, documents: Iterable[Document]) -> List[Chunk]:
         all_chunks: List[Chunk] = []
         for document in documents:
-            chunks = self.chunker.chunk(document)
-            embeddings = self.embedder.embed([chunk.text for chunk in chunks])
-            self.store.add(chunks, embeddings)
-            all_chunks.extend(chunks)
+            all_chunks.extend(self.chunker.chunk(document))
+        if not all_chunks:
+            return []
+
+        embeddings = self._embed_texts([chunk.text for chunk in all_chunks])
+        self.store.add(all_chunks, embeddings)
         return all_chunks
 
     def upsert(self, documents: Iterable[Document], fts_index: object | None = None) -> List[Chunk]:
@@ -66,3 +76,38 @@ class SimplePipeline:
             filters=filters,
             range_filters=range_filters,
         )
+
+    def clear_embedding_cache(self) -> None:
+        self._embedding_cache.clear()
+
+    def _embed_texts(self, texts: Sequence[str]) -> List[List[float]]:
+        if self.embed_batch_size <= 0:
+            raise ValueError("embed_batch_size must be positive")
+        if not texts:
+            return []
+
+        vectors: list[list[float] | None] = [None] * len(texts)
+        pending: dict[str, list[int]] = {}
+
+        for idx, text in enumerate(texts):
+            if self.use_embedding_cache and text in self._embedding_cache:
+                vectors[idx] = list(self._embedding_cache[text])
+            else:
+                pending.setdefault(text, []).append(idx)
+
+        unique_pending = list(pending.keys())
+        for start in range(0, len(unique_pending), self.embed_batch_size):
+            batch_texts = unique_pending[start : start + self.embed_batch_size]
+            batch_vectors = self.embedder.embed(batch_texts)
+            if len(batch_vectors) != len(batch_texts):
+                raise ValueError("embedder returned unexpected vector count")
+            for text, raw_vec in zip(batch_texts, batch_vectors):
+                vec = [float(x) for x in raw_vec]
+                if self.use_embedding_cache:
+                    self._embedding_cache[text] = vec
+                for idx in pending[text]:
+                    vectors[idx] = list(vec)
+
+        if any(vec is None for vec in vectors):  # pragma: no cover - defensive
+            raise RuntimeError("failed to generate embeddings for all chunks")
+        return [vec for vec in vectors if vec is not None]
