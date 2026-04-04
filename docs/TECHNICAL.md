@@ -137,6 +137,7 @@ flowchart LR
 - `yfanrag delete`：按 `doc_id` 删除向量与可选 FTS 索引数据。
 - `yfanrag query` 与 `yfanrag hybrid-query` 支持 `--filter key=value` 与 `--range key:min:max`（字段过滤与范围过滤）。
 - `yfanrag ingest` 支持 `--embed-batch-size` 与 `--disable-embed-cache`。
+- `yfanrag benchmark`：读取 JSON/JSONL 评测集，输出质量指标（HitRate/MRR/Recall）与延迟统计（avg/p50/p95/max）。
 
 **7. 开发任务表**
 
@@ -156,7 +157,7 @@ flowchart LR
 | T-012 | 批处理与缓存 | 支持批量 embedding 与写入 | P2 | 已完成 |
 | T-013 | CLI 原型 | 支持 ingest/query/rebuild | P2 | 已完成 |
 | T-014 | 测试体系 | 单元与集成测试覆盖核心路径 | P1 | 已完成 |
-| T-015 | Benchmark 与评估脚本 | 可生成检索质量与性能报告 | P2 | 未开始 |
+| T-015 | Benchmark 与评估脚本 | 可生成检索质量与性能报告 | P2 | 已完成 |
 | T-016 | 示例与教程 | 至少 3 个可运行示例 | P2 | 未开始 |
 | T-017 | 版本与发布流程 | tag、changelog、发布脚本 | P2 | 未开始 |
 | T-018 | 迁移与兼容策略 | SQLite 与 DuckDB 数据可迁移 | P2 | 未开始 |

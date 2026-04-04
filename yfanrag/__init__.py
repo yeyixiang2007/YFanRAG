@@ -1,5 +1,11 @@
 """Public API exports."""
 
+from .benchmark import (
+    BenchmarkCase,
+    RetrievalItem,
+    evaluate_retrieval_benchmark,
+    load_benchmark_cases,
+)
 from .chunking import FixedChunker, RecursiveChunker
 from .config import (
     ChunkingConfig,
@@ -21,6 +27,8 @@ from .vectorstores.sqlite_vec import SqliteVecStore
 __all__ = [
     "Chunk",
     "Document",
+    "BenchmarkCase",
+    "RetrievalItem",
     "Chunker",
     "DocumentLoader",
     "Embedder",
@@ -44,4 +52,6 @@ __all__ = [
     "SimplePipeline",
     "HybridHit",
     "HybridRetriever",
+    "load_benchmark_cases",
+    "evaluate_retrieval_benchmark",
 ]

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
+from .benchmark import RetrievalItem, evaluate_retrieval_benchmark, load_benchmark_cases
 from .chunking import FixedChunker, RecursiveChunker
 from .embedders import HashingEmbedder, HttpEmbedder
 from .fts import SqliteFtsIndex
@@ -239,6 +241,104 @@ def cmd_delete(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_benchmark(args: argparse.Namespace) -> int:
+    cases = load_benchmark_cases(args.dataset)
+    if args.case_limit is not None:
+        if args.case_limit <= 0:
+            raise ValueError("case-limit must be positive")
+        cases = cases[: args.case_limit]
+
+    mode = args.mode
+    filters: dict[str, object] | None = None
+    range_filters: dict[str, tuple[float | int | None, float | int | None]] | None = None
+    if mode in {"vector", "hybrid"}:
+        parsed_filters, parsed_ranges = _parse_query_filters(args)
+        filters = parsed_filters or None
+        range_filters = parsed_ranges or None
+
+    report: dict[str, object]
+    if mode == "fts":
+        fts = SqliteFtsIndex(path=args.db)
+        try:
+            report = evaluate_retrieval_benchmark(
+                cases=cases,
+                default_top_k=args.top_k,
+                retrieve=lambda query, top_k: [
+                    RetrievalItem(chunk_id=item.chunk_id, doc_id=item.doc_id or "")
+                    for item in fts.query(query, top_k)
+                ],
+            )
+        finally:
+            fts.close()
+    elif mode == "hybrid":
+        embedder = _build_embedder(args)
+        store = _build_store(args)
+        fts = SqliteFtsIndex(path=args.db)
+        try:
+            retriever = HybridRetriever(
+                embedder=embedder,
+                vector_store=store,
+                fts_index=fts,
+                alpha=args.alpha,
+                score_norm=args.score_norm,
+            )
+            report = evaluate_retrieval_benchmark(
+                cases=cases,
+                default_top_k=args.top_k,
+                retrieve=lambda query, top_k: [
+                    RetrievalItem(
+                        chunk_id=hit.chunk.chunk_id,
+                        doc_id=hit.chunk.doc_id,
+                    )
+                    for hit in retriever.retrieve_with_scores(
+                        query=query,
+                        top_k=top_k,
+                        vector_top_k=args.vector_top_k,
+                        fts_top_k=args.fts_top_k,
+                        filters=filters,
+                        range_filters=range_filters,
+                    )
+                ],
+            )
+        finally:
+            fts.close()
+            if hasattr(store, "close"):
+                store.close()
+    else:
+        embedder = _build_embedder(args)
+        store = _build_store(args)
+        try:
+            report = evaluate_retrieval_benchmark(
+                cases=cases,
+                default_top_k=args.top_k,
+                retrieve=lambda query, top_k: [
+                    RetrievalItem(chunk_id=chunk.chunk_id, doc_id=chunk.doc_id)
+                    for chunk in store.query(
+                        embedder.embed([query])[0],
+                        top_k,
+                        filters=filters,
+                        range_filters=range_filters,
+                    )
+                ],
+            )
+        finally:
+            if hasattr(store, "close"):
+                store.close()
+
+    payload = {
+        "mode": mode,
+        "dataset": args.dataset,
+        "top_k": args.top_k,
+        "case_count": len(cases),
+        "report": report,
+    }
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2)
+    print(serialized)
+    if args.output:
+        Path(args.output).write_text(serialized + "\n", encoding="utf-8")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="yfanrag")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -338,6 +438,43 @@ def build_parser() -> argparse.ArgumentParser:
     delete.add_argument("--doc-id", action="append", required=True)
     delete.add_argument("--enable-fts", action="store_true")
     delete.set_defaults(func=cmd_delete)
+
+    benchmark = sub.add_parser(
+        "benchmark",
+        help="Run retrieval quality and latency benchmark",
+    )
+    benchmark.add_argument("dataset", help="Path to benchmark json/jsonl file")
+    benchmark.add_argument("--mode", choices=["vector", "fts", "hybrid"], default="vector")
+    benchmark.add_argument("--db", default="yfanrag.db")
+    benchmark.add_argument("--store", choices=["sqlite-vec", "memory"], default="sqlite-vec")
+    benchmark.add_argument("--embedder", choices=["hashing", "http"], default="hashing")
+    benchmark.add_argument("--dims", type=int, default=8)
+    benchmark.add_argument("--endpoint")
+    benchmark.add_argument("--model")
+    benchmark.add_argument("--api-key-env")
+    benchmark.add_argument("--top-k", type=int, default=5)
+    benchmark.add_argument("--case-limit", type=int, default=None)
+    benchmark.add_argument("--output", default=None)
+    benchmark.add_argument("--alpha", type=float, default=0.5)
+    benchmark.add_argument("--score-norm", choices=["minmax", "none"], default="minmax")
+    benchmark.add_argument("--vector-top-k", type=int, default=None)
+    benchmark.add_argument("--fts-top-k", type=int, default=None)
+    benchmark.add_argument("--distance-metric", choices=["l2", "cosine"], default=None)
+    benchmark.add_argument(
+        "--filter",
+        dest="filters",
+        action="append",
+        default=[],
+        help="Field equality filter, format key=value; repeatable",
+    )
+    benchmark.add_argument(
+        "--range",
+        dest="ranges",
+        action="append",
+        default=[],
+        help="Numeric range filter, format key:min:max; min/max can be empty; repeatable",
+    )
+    benchmark.set_defaults(func=cmd_benchmark)
 
     return parser
 

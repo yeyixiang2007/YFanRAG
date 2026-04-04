@@ -99,6 +99,18 @@ yfanrag hybrid-query \"hello\" --db yfanrag.db --top-k 3 --alpha 0.5 --filter "d
 yfanrag delete --db yfanrag.db --store sqlite-vec --doc-id "file:docs/TECHNICAL.md" --enable-fts
 ```
 
+Benchmark（质量 + 性能报告）：  
+
+```powershell
+yfanrag benchmark benchmarks/cases.jsonl --db yfanrag.db --mode vector --top-k 5 --output benchmark_report.json
+```
+
+`cases.jsonl` 每行示例：
+
+```json
+{"query":"hello","expected_doc_ids":["file:docs/TECHNICAL.md"]}
+```
+
 **贡献**
 
 欢迎提交 Issue 与 PR。建议先从 `docs/TECHNICAL.md` 的任务表中挑选任务。
