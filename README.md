@@ -73,6 +73,12 @@ yfanrag query \"hello\" --db yfanrag.db --store sqlite-vec --top-k 3
 yfanrag fts-query \"hello\" --db yfanrag.db --top-k 3
 ```
 
+混合检索（向量 + FTS 融合）：  
+
+```powershell
+yfanrag hybrid-query \"hello\" --db yfanrag.db --top-k 3 --alpha 0.5
+```
+
 **贡献**
 
 欢迎提交 Issue 与 PR。建议先从 `docs/TECHNICAL.md` 的任务表中挑选任务。

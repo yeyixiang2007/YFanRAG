@@ -132,6 +132,7 @@ flowchart LR
 - `yfanrag ingest`：文档入库，支持 `sqlite-vec` 与 `memory` 后端，支持 FTS 建索引。
 - `yfanrag query`：向量检索（TopK）。
 - `yfanrag fts-query`：全文检索。
+- `yfanrag hybrid-query`：向量 + FTS 混合检索，支持 `alpha` 融合权重。
 
 **7. 开发任务表**
 
@@ -145,7 +146,7 @@ flowchart LR
 | T-006 | SQLite `vec1` 适配层 | 可建索引与检索，含迁移策略 | P1 | 未开始 |
 | T-007 | DuckDB `vss` 适配层 | 可建索引与检索，含持久化配置 | P1 | 未开始 |
 | T-008 | FTS 适配层 | SQLite FTS5 与 DuckDB FTS 可用 | P1 | 已完成 |
-| T-009 | 混合检索融合器 | 向量+FTS 加权融合可用 | P1 | 未开始 |
+| T-009 | 混合检索融合器 | 向量+FTS 加权融合可用 | P1 | 已完成 |
 | T-010 | 增量更新与删除 | 文档更新不会产生孤儿索引 | P1 | 未开始 |
 | T-011 | 元数据过滤 | 支持过滤字段与范围查询 | P1 | 未开始 |
 | T-012 | 批处理与缓存 | 支持批量 embedding 与写入 | P2 | 未开始 |

@@ -14,6 +14,7 @@ from .interfaces import Chunker, DocumentLoader, Embedder, Retriever, VectorStor
 from .loaders.text import TextFileLoader
 from .models import Chunk, Document
 from .pipeline import SimplePipeline
+from .retrievers import HybridHit, HybridRetriever
 from .vectorstores.memory import InMemoryVectorStore
 from .vectorstores.sqlite_vec import SqliteVecStore
 
@@ -41,4 +42,6 @@ __all__ = [
     "FtsMatch",
     "SqliteFtsIndex",
     "SimplePipeline",
+    "HybridHit",
+    "HybridRetriever",
 ]

@@ -11,6 +11,7 @@ from .embedders import HashingEmbedder, HttpEmbedder
 from .fts import SqliteFtsIndex
 from .loaders.text import TextFileLoader
 from .pipeline import SimplePipeline
+from .retrievers import HybridRetriever
 from .vectorstores.memory import InMemoryVectorStore
 from .vectorstores.sqlite_vec import SqliteVecStore
 
@@ -95,6 +96,7 @@ def cmd_query(args: argparse.Namespace) -> int:
 def cmd_fts_query(args: argparse.Namespace) -> int:
     fts = SqliteFtsIndex(path=args.db)
     results = fts.query(args.query, args.top_k)
+    fts.close()
     for idx, match in enumerate(results, start=1):
         payload = {
             "rank": idx,
@@ -102,6 +104,44 @@ def cmd_fts_query(args: argparse.Namespace) -> int:
             "doc_id": match.doc_id,
             "score": match.score,
             "text": match.text,
+        }
+        print(json.dumps(payload, ensure_ascii=False))
+    return 0
+
+
+def cmd_hybrid_query(args: argparse.Namespace) -> int:
+    embedder = _build_embedder(args)
+    store = _build_store(args)
+    fts = SqliteFtsIndex(path=args.db)
+    try:
+        retriever = HybridRetriever(
+            embedder=embedder,
+            vector_store=store,
+            fts_index=fts,
+            alpha=args.alpha,
+            score_norm=args.score_norm,
+        )
+        results = retriever.retrieve_with_scores(
+            query=args.query,
+            top_k=args.top_k,
+            vector_top_k=args.vector_top_k,
+            fts_top_k=args.fts_top_k,
+        )
+    finally:
+        fts.close()
+
+    for idx, hit in enumerate(results, start=1):
+        chunk = hit.chunk
+        payload = {
+            "rank": idx,
+            "chunk_id": chunk.chunk_id,
+            "doc_id": chunk.doc_id,
+            "start": chunk.start,
+            "end": chunk.end,
+            "fused_score": hit.fused_score,
+            "vector_score": hit.vector_score,
+            "fts_score": hit.fts_score,
+            "text": chunk.text,
         }
         print(json.dumps(payload, ensure_ascii=False))
     return 0
@@ -145,6 +185,30 @@ def build_parser() -> argparse.ArgumentParser:
     fts_query.add_argument("--db", default="yfanrag.db")
     fts_query.add_argument("--top-k", type=int, default=5)
     fts_query.set_defaults(func=cmd_fts_query)
+
+    hybrid_query = sub.add_parser(
+        "hybrid-query",
+        help="Hybrid retrieval by vector + FTS score fusion",
+    )
+    hybrid_query.add_argument("query")
+    hybrid_query.add_argument("--db", default="yfanrag.db")
+    hybrid_query.add_argument(
+        "--store",
+        choices=["sqlite-vec", "memory"],
+        default="sqlite-vec",
+    )
+    hybrid_query.add_argument("--embedder", choices=["hashing", "http"], default="hashing")
+    hybrid_query.add_argument("--dims", type=int, default=8)
+    hybrid_query.add_argument("--endpoint")
+    hybrid_query.add_argument("--model")
+    hybrid_query.add_argument("--api-key-env")
+    hybrid_query.add_argument("--top-k", type=int, default=5)
+    hybrid_query.add_argument("--vector-top-k", type=int, default=None)
+    hybrid_query.add_argument("--fts-top-k", type=int, default=None)
+    hybrid_query.add_argument("--alpha", type=float, default=0.5)
+    hybrid_query.add_argument("--score-norm", choices=["minmax", "none"], default="minmax")
+    hybrid_query.add_argument("--distance-metric", choices=["l2", "cosine"], default=None)
+    hybrid_query.set_defaults(func=cmd_hybrid_query)
 
     return parser
 
