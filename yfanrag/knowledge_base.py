@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterable, Sequence
 import re
@@ -42,6 +42,40 @@ _PATH_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 _CODE_HINT_RE = re.compile(r"(?:`[^`]+`|::|->|=>|==|!=|<=|>=|[{}()\[\]<>])")
+_EN_STOPWORDS = {
+    "a",
+    "an",
+    "the",
+    "and",
+    "or",
+    "not",
+    "to",
+    "for",
+    "of",
+    "in",
+    "on",
+    "at",
+    "from",
+    "with",
+    "by",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "this",
+    "that",
+    "these",
+    "those",
+    "what",
+    "which",
+    "when",
+    "where",
+    "who",
+    "how",
+    "why",
+}
+_CN_STOPWORDS = {"的", "了", "和", "或", "与", "及", "在", "对", "是", "请", "并", "给出"}
 
 
 @dataclass(frozen=True)
@@ -65,6 +99,10 @@ class KnowledgeBaseConfig:
     score_norm: str = "minmax"
     vector_top_k: int | None = None
     fts_top_k: int | None = None
+    multi_query_enabled: bool = True
+    multi_query_count: int = 4
+    multi_query_rrf_k: int = 60
+    multi_query_candidate_top_k: int | None = None
     path_whitelist: Sequence[str] | None = None
 
 
@@ -90,6 +128,7 @@ class KnowledgeBaseHit:
     distance: float | None = None
     vector_score: float | None = None
     fts_score: float | None = None
+    rrf_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +139,10 @@ class KnowledgeBaseQueryPlan:
     alpha: float | None = None
     vector_top_k: int | None = None
     fts_top_k: int | None = None
+    query_variants: tuple[str, ...] = ()
+    fusion: str | None = None
+    rrf_k: int | None = None
+    candidate_top_k: int | None = None
 
 
 @dataclass(frozen=True)
@@ -227,20 +270,37 @@ class KnowledgeBaseManager:
             raise ValueError(f"unsupported query mode: {mode}")
 
         plan = self._build_query_plan(text, top_k, requested_mode, config)
-        self._last_query_plan = plan
+        variant_count = self._resolve_multi_query_count(config)
+        variants = self._expand_query_variants(text, variant_count)
+        if not variants:
+            variants = [text]
+        if len(variants) == 1:
+            final_plan = replace(plan, query_variants=tuple(variants))
+            self._last_query_plan = final_plan
+            return self._execute_query_by_plan(variants[0], top_k, final_plan, config)
 
-        if plan.resolved_mode == "fts":
-            return self._query_fts(text, top_k, config)
-        if plan.resolved_mode == "hybrid":
-            return self._query_hybrid(
-                text,
-                top_k,
-                config,
-                alpha=plan.alpha,
-                vector_top_k=plan.vector_top_k,
-                fts_top_k=plan.fts_top_k,
-            )
-        return self._query_vector(text, top_k, config)
+        candidate_top_k = self._resolve_multi_query_candidate_top_k(top_k, config)
+        rrf_k = self._normalize_rrf_k(config.multi_query_rrf_k)
+        runs: list[list[KnowledgeBaseHit]] = []
+        for variant in variants:
+            hits = self._execute_query_by_plan(variant, candidate_top_k, plan, config)
+            if hits:
+                runs.append(hits)
+        final_plan = replace(
+            plan,
+            query_variants=tuple(variants),
+            fusion="rrf",
+            rrf_k=rrf_k,
+            candidate_top_k=candidate_top_k,
+        )
+        self._last_query_plan = final_plan
+        if not runs:
+            return []
+        return self._fuse_rrf_hits(
+            runs=runs,
+            top_k=top_k,
+            rrf_k=rrf_k,
+        )
 
     def list_doc_ids(
         self,
@@ -409,6 +469,172 @@ class KnowledgeBaseManager:
                 )
             )
         return hits
+
+    def _execute_query_by_plan(
+        self,
+        query_text: str,
+        top_k: int,
+        plan: KnowledgeBaseQueryPlan,
+        config: KnowledgeBaseConfig,
+    ) -> list[KnowledgeBaseHit]:
+        if plan.resolved_mode == "fts":
+            return self._query_fts(query_text, top_k, config)
+        if plan.resolved_mode == "hybrid":
+            return self._query_hybrid(
+                query_text,
+                top_k,
+                config,
+                alpha=plan.alpha,
+                vector_top_k=plan.vector_top_k,
+                fts_top_k=plan.fts_top_k,
+            )
+        return self._query_vector(query_text, top_k, config)
+
+    @staticmethod
+    def _fuse_rrf_hits(
+        runs: Sequence[Sequence[KnowledgeBaseHit]],
+        top_k: int,
+        rrf_k: int,
+    ) -> list[KnowledgeBaseHit]:
+        if top_k <= 0:
+            return []
+        accumulator: dict[tuple[str, str], dict[str, object]] = {}
+        for run_index, run in enumerate(runs):
+            for rank, hit in enumerate(run, start=1):
+                key = (hit.doc_id, hit.chunk_id)
+                bonus = 1.0 / float(rrf_k + rank)
+                item = accumulator.get(key)
+                if item is None:
+                    accumulator[key] = {
+                        "rrf_score": bonus,
+                        "best_rank": rank,
+                        "run_index": run_index,
+                        "hit": hit,
+                    }
+                    continue
+                item["rrf_score"] = float(item["rrf_score"]) + bonus
+                if rank < int(item["best_rank"]):
+                    item["best_rank"] = rank
+                    item["run_index"] = run_index
+                    item["hit"] = hit
+        ranked = sorted(
+            accumulator.values(),
+            key=lambda item: (
+                float(item["rrf_score"]),
+                -int(item["best_rank"]),
+                -int(item["run_index"]),
+                str(getattr(item["hit"], "chunk_id", "")),
+            ),
+            reverse=True,
+        )
+        merged: list[KnowledgeBaseHit] = []
+        for idx, item in enumerate(ranked[:top_k], start=1):
+            hit = item["hit"]
+            if not isinstance(hit, KnowledgeBaseHit):
+                continue
+            merged.append(
+                replace(
+                    hit,
+                    rank=idx,
+                    rrf_score=float(item["rrf_score"]),
+                )
+            )
+        return merged
+
+    @staticmethod
+    def _resolve_multi_query_count(config: KnowledgeBaseConfig) -> int:
+        if not config.multi_query_enabled:
+            return 1
+        count = int(config.multi_query_count)
+        if count < 3:
+            return 3
+        if count > 5:
+            return 5
+        return count
+
+    def _resolve_multi_query_candidate_top_k(
+        self,
+        top_k: int,
+        config: KnowledgeBaseConfig,
+    ) -> int:
+        configured = self._normalize_candidate_top_k(config.multi_query_candidate_top_k, top_k)
+        if configured is not None:
+            return configured
+        return self._scaled_candidate_top_k(top_k, factor=3.0, extra=2, cap=128)
+
+    @staticmethod
+    def _normalize_rrf_k(value: int) -> int:
+        numeric = int(value)
+        if numeric < 10:
+            return 10
+        if numeric > 200:
+            return 200
+        return numeric
+
+    @staticmethod
+    def _expand_query_variants(query_text: str, target_count: int) -> list[str]:
+        text = query_text.strip()
+        if not text:
+            return []
+        if target_count <= 1:
+            return [text]
+
+        variants: list[str] = []
+        seen: set[str] = set()
+
+        def _add(candidate: str) -> None:
+            value = " ".join(candidate.split()).strip()
+            if not value:
+                return
+            marker = value.lower()
+            if marker in seen:
+                return
+            seen.add(marker)
+            variants.append(value)
+
+        tokens = _WORD_RE.findall(text)
+        token_line = " ".join(tokens)
+        keyword_tokens = [token for token in tokens if KnowledgeBaseManager._is_query_keyword(token)]
+
+        _add(text)
+        _add(token_line)
+        if keyword_tokens:
+            _add(" ".join(keyword_tokens[:10]))
+            _add(" OR ".join(keyword_tokens[:8]))
+            _add(" ".join(f'"{token}"' for token in keyword_tokens[:6]))
+
+        if len(tokens) >= 4:
+            _add(" ".join(tokens[: min(6, len(tokens))]))
+            _add(" ".join(tokens[-min(6, len(tokens)) :]))
+
+        for token in keyword_tokens[:6]:
+            _add(token)
+        for idx in range(0, max(0, len(keyword_tokens) - 1)):
+            pair = f"{keyword_tokens[idx]} {keyword_tokens[idx + 1]}"
+            _add(pair)
+
+        if len(variants) < target_count:
+            seed = keyword_tokens[0] if keyword_tokens else (tokens[0] if tokens else text)
+            _add(f'"{seed}"')
+            _add(f"{seed} OR {seed}")
+
+        return variants[:target_count]
+
+    @staticmethod
+    def _is_query_keyword(token: str) -> bool:
+        value = token.strip()
+        if not value:
+            return False
+        if re.fullmatch(r"[A-Za-z0-9_]+", value):
+            lowered = value.lower()
+            if lowered in _EN_STOPWORDS:
+                return False
+            return len(value) > 1
+        if re.fullmatch(r"[\u4e00-\u9fff]+", value):
+            if value in _CN_STOPWORDS:
+                return False
+            return len(value) >= 2
+        return True
 
     def _build_query_plan(
         self,

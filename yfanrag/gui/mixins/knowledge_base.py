@@ -557,8 +557,8 @@ class AppKnowledgeBaseMixin:
             return
 
         plan = self.kb_manager.last_query_plan
-        if plan is not None and plan.requested_mode == "auto":
-            self._kb_append_log("info", f"Adaptive route: {self._kb_plan_summary(plan)}")
+        if plan is not None and (plan.requested_mode == "auto" or plan.fusion is not None):
+            self._kb_append_log("info", f"Query plan: {self._kb_plan_summary(plan)}")
         if not hits:
             self._kb_append_log("warn", "No retrieval results.")
             return
@@ -586,17 +586,28 @@ class AppKnowledgeBaseMixin:
             fused = 0.0 if hit.score is None else hit.score
             vector_score = 0.0 if hit.vector_score is None else hit.vector_score
             fts_score = 0.0 if hit.fts_score is None else hit.fts_score
-            return (
+            body = (
                 f"fused={fused:.4f} "
                 f"vec={vector_score:.4f} fts={fts_score:.4f}"
             )
+            if hit.rrf_score is not None:
+                return f"rrf={hit.rrf_score:.4f} {body}"
+            return body
         if hit.source == "vector":
             if hit.distance is None:
-                return "vector"
-            return f"distance={hit.distance:.4f}"
+                body = "vector"
+            else:
+                body = f"distance={hit.distance:.4f}"
+            if hit.rrf_score is not None:
+                return f"rrf={hit.rrf_score:.4f} {body}"
+            return body
         if hit.score is None:
-            return "fts"
-        return f"bm25={hit.score:.4f}"
+            body = "fts"
+        else:
+            body = f"bm25={hit.score:.4f}"
+        if hit.rrf_score is not None:
+            return f"rrf={hit.rrf_score:.4f} {body}"
+        return body
 
     @staticmethod
     def _kb_plan_summary(plan: KnowledgeBaseQueryPlan) -> str:
@@ -607,6 +618,14 @@ class AppKnowledgeBaseMixin:
             parts.append(f"vec_k={plan.vector_top_k}")
         if plan.fts_top_k is not None:
             parts.append(f"fts_k={plan.fts_top_k}")
+        if plan.fusion is not None:
+            mq_count = len(plan.query_variants) if plan.query_variants else 1
+            if plan.rrf_k is None:
+                parts.append(f"fusion={plan.fusion}({mq_count})")
+            else:
+                parts.append(f"fusion={plan.fusion}({mq_count},k={plan.rrf_k})")
+        if plan.candidate_top_k is not None:
+            parts.append(f"cand_k={plan.candidate_top_k}")
         return ", ".join(parts)
 
     def _build_kb_context_for_user_text(self, user_text: str) -> tuple[str, str]:
@@ -632,7 +651,7 @@ class AppKnowledgeBaseMixin:
 
         plan = self.kb_manager.last_query_plan
         mode_note = mode
-        if plan is not None and plan.requested_mode == "auto":
+        if plan is not None and (plan.requested_mode == "auto" or plan.fusion is not None):
             mode_note = self._kb_plan_summary(plan)
         context_block = self._format_kb_context(hits)
         payload = (

@@ -94,6 +94,10 @@ def test_knowledge_base_auto_routing_and_dynamic_params(tmp_path: Path) -> None:
     assert keyword_plan.requested_mode == "auto"
     assert keyword_plan.resolved_mode == "fts"
     assert keyword_plan.query_type == "keyword"
+    assert keyword_plan.fusion == "rrf"
+    assert 3 <= len(keyword_plan.query_variants) <= 5
+    assert keyword_plan.rrf_k is not None
+    assert keyword_plan.candidate_top_k is not None
 
     manager.query(
         "请解释 vector search 与 full text search 在语义召回质量、精确匹配能力和延迟成本上的区别，"
@@ -106,6 +110,8 @@ def test_knowledge_base_auto_routing_and_dynamic_params(tmp_path: Path) -> None:
     assert semantic_plan is not None
     assert semantic_plan.resolved_mode == "vector"
     assert semantic_plan.query_type == "semantic"
+    assert semantic_plan.fusion == "rrf"
+    assert 3 <= len(semantic_plan.query_variants) <= 5
 
     manager.query("sqlite vector search 区别", top_k=4, mode="auto", config=config)
     hybrid_plan = manager.last_query_plan
@@ -116,6 +122,8 @@ def test_knowledge_base_auto_routing_and_dynamic_params(tmp_path: Path) -> None:
     assert hybrid_plan.fts_top_k is not None
     assert hybrid_plan.vector_top_k >= 4
     assert hybrid_plan.fts_top_k >= 4
+    assert hybrid_plan.fusion == "rrf"
+    assert 3 <= len(hybrid_plan.query_variants) <= 5
 
     no_fts_config = replace(config, enable_fts=False)
     manager.query("sqlite keyword", top_k=3, mode="auto", config=no_fts_config)
@@ -123,3 +131,42 @@ def test_knowledge_base_auto_routing_and_dynamic_params(tmp_path: Path) -> None:
     assert fallback_plan is not None
     assert fallback_plan.resolved_mode == "vector"
     assert fallback_plan.query_type == "fts-unavailable"
+    assert fallback_plan.fusion == "rrf"
+
+
+def test_knowledge_base_multi_query_rrf_hits(tmp_path: Path) -> None:
+    _write_demo_docs(tmp_path)
+    manager = KnowledgeBaseManager()
+    config = _build_config(tmp_path)
+    manager.ingest_paths([str(tmp_path)], config)
+
+    hits = manager.query(
+        "sqlite vector search 的区别是什么",
+        top_k=3,
+        mode="hybrid",
+        config=config,
+    )
+    assert hits
+    assert all(hit.rrf_score is not None for hit in hits)
+    assert hits[0].source == "hybrid"
+
+    plan = manager.last_query_plan
+    assert plan is not None
+    assert plan.requested_mode == "hybrid"
+    assert plan.fusion == "rrf"
+    assert 3 <= len(plan.query_variants) <= 5
+    assert plan.candidate_top_k is not None
+
+
+def test_knowledge_base_disable_multi_query(tmp_path: Path) -> None:
+    _write_demo_docs(tmp_path)
+    manager = KnowledgeBaseManager()
+    config = replace(_build_config(tmp_path), multi_query_enabled=False)
+    manager.ingest_paths([str(tmp_path)], config)
+
+    hits = manager.query("vector search", top_k=3, mode="vector", config=config)
+    assert hits
+    plan = manager.last_query_plan
+    assert plan is not None
+    assert plan.fusion is None
+    assert len(plan.query_variants) == 1
