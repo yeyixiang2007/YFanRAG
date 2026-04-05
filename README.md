@@ -6,7 +6,7 @@
 ## 功能概览
 
 - 多后端向量存储：`sqlite-vec`、`sqlite-vec1`、`duckdb-vss`、`memory`
-- 检索模式：向量检索、FTS 检索、混合检索（向量 + FTS）
+- 检索模式：`auto` 自适应路由、向量检索、FTS 检索、混合检索（向量 + FTS）
 - 数据维护：增量更新、按 `doc_id` 删除、跨后端迁移
 - 查询增强：字段过滤、范围过滤、批处理与 embedding 缓存
 - 工程能力：Benchmark 报告、统一日志、慢查询提示、安全白名单
@@ -254,8 +254,18 @@ python examples/04_tk_chat_app.py
 1. 选择 `Database` 文件、`Store`（推荐 `sqlite-vec1`）、`Chunker`、`Chunk Size/Overlap`、`Embedding Dims`。
 2. 点击 `Add Files` 或 `Add Folder` 选择文本/代码文件（如 `.md/.txt/.py/.gd/.js` 等），然后点 `Ingest / Upsert` 入库。
 3. 用 `Refresh Stats` 查看当前 `docs/chunks` 统计，用 `List Doc IDs` 查看可删除文档 ID。
-4. 在 `KB Query` 输入检索词并 `Run Query` 预览召回结果（`vector / hybrid / fts` 可切换）。
+4. 在 `KB Query` 输入检索词并 `Run Query` 预览召回结果（支持 `auto / vector / hybrid / fts`；`auto` 会按问题类型动态路由并调整 `alpha/vector_top_k/fts_top_k`）。
 5. 在 `Delete Doc ID(s)` 输入一个或多个 `doc_id`（空格/逗号分隔）并点击 `Delete`。
+
+### 自适应检索路由（`auto`）
+
+- GUI 默认 `Query Mode = auto`。
+- `auto` 会根据查询特征自动选择：
+  - 关键词/路径/报错定位倾向：优先 `fts`
+  - 语义问答倾向：优先 `vector`
+  - 混合场景：走 `hybrid` 并动态调整 `alpha / vector_top_k / fts_top_k`
+- 当 `FTS` 不可用（例如关闭 `Enable FTS` 或使用 `duckdb-vss`）时，自动回退到 `vector`。
+- 在 KB 日志与聊天上下文提示中会显示实际路由结果（如 `auto->hybrid`）和关键参数。
 
 ### 在对话中启用知识库增强
 

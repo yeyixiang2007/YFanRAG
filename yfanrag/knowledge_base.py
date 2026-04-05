@@ -19,13 +19,29 @@ from .vectorstores.sqlite_vec import SqliteVecStore
 from .vectorstores.sqlite_vec1 import SqliteVec1Store
 
 STORE_CHOICES = ("sqlite-vec1", "sqlite-vec", "duckdb-vss")
-QUERY_MODE_CHOICES = ("vector", "hybrid", "fts")
+QUERY_MODE_CHOICES = ("auto", "vector", "hybrid", "fts")
 DEFAULT_TABLES = {
     "sqlite-vec1": "vec1_chunks_data",
     "sqlite-vec": "vec_chunks",
     "duckdb-vss": "vss_chunks",
 }
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_WORD_RE = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]+")
+_SEMANTIC_HINT_RE = re.compile(
+    r"(?:why|how|explain|difference|compare|summary|overview|design|trade-?off|best practice|"
+    r"什么时候|为什么|如何|解释|区别|对比|总结|原理|建议)",
+    re.IGNORECASE,
+)
+_KEYWORD_OP_RE = re.compile(r"\b(?:and|or|not)\b|[+\-|]", re.IGNORECASE)
+_ERROR_HINT_RE = re.compile(
+    r"(?:error|exception|traceback|stack trace|failed|errno|http\s*\d{3}|line\s*\d+|报错|异常|堆栈)",
+    re.IGNORECASE,
+)
+_PATH_HINT_RE = re.compile(
+    r"(?:[A-Za-z]:\\|/)[^\s]+|[A-Za-z0-9_.-]+\.(?:py|md|txt|json|yaml|yml|toml|ini|sql|js|ts|java|go|rs)\b",
+    re.IGNORECASE,
+)
+_CODE_HINT_RE = re.compile(r"(?:`[^`]+`|::|->|=>|==|!=|<=|>=|[{}()\[\]<>])")
 
 
 @dataclass(frozen=True)
@@ -77,6 +93,16 @@ class KnowledgeBaseHit:
 
 
 @dataclass(frozen=True)
+class KnowledgeBaseQueryPlan:
+    requested_mode: str
+    resolved_mode: str
+    query_type: str
+    alpha: float | None = None
+    vector_top_k: int | None = None
+    fts_top_k: int | None = None
+
+
+@dataclass(frozen=True)
 class KnowledgeBaseIngestResult:
     document_count: int
     chunk_count: int
@@ -92,6 +118,13 @@ class KnowledgeBaseDeleteResult:
 
 class KnowledgeBaseManager:
     """Orchestrates ingest/query/delete operations for local KB data."""
+
+    def __init__(self) -> None:
+        self._last_query_plan: KnowledgeBaseQueryPlan | None = None
+
+    @property
+    def last_query_plan(self) -> KnowledgeBaseQueryPlan | None:
+        return self._last_query_plan
 
     def ingest_paths(
         self,
@@ -184,16 +217,29 @@ class KnowledgeBaseManager:
     ) -> list[KnowledgeBaseHit]:
         text = query_text.strip()
         if not text:
+            self._last_query_plan = None
             return []
         if top_k <= 0:
+            self._last_query_plan = None
             return []
-        if mode not in QUERY_MODE_CHOICES:
+        requested_mode = (mode or "").strip().lower()
+        if requested_mode not in QUERY_MODE_CHOICES:
             raise ValueError(f"unsupported query mode: {mode}")
 
-        if mode == "fts":
+        plan = self._build_query_plan(text, top_k, requested_mode, config)
+        self._last_query_plan = plan
+
+        if plan.resolved_mode == "fts":
             return self._query_fts(text, top_k, config)
-        if mode == "hybrid":
-            return self._query_hybrid(text, top_k, config)
+        if plan.resolved_mode == "hybrid":
+            return self._query_hybrid(
+                text,
+                top_k,
+                config,
+                alpha=plan.alpha,
+                vector_top_k=plan.vector_top_k,
+                fts_top_k=plan.fts_top_k,
+            )
         return self._query_vector(text, top_k, config)
 
     def list_doc_ids(
@@ -266,9 +312,24 @@ class KnowledgeBaseManager:
         query_text: str,
         top_k: int,
         config: KnowledgeBaseConfig,
+        alpha: float | None = None,
+        vector_top_k: int | None = None,
+        fts_top_k: int | None = None,
     ) -> list[KnowledgeBaseHit]:
         if config.store == "duckdb-vss":
             raise ValueError("hybrid mode currently requires a sqlite store with FTS")
+
+        alpha_value = self._clamp(
+            config.hybrid_alpha if alpha is None else float(alpha),
+            0.0,
+            1.0,
+        )
+        vector_limit = self._normalize_candidate_top_k(vector_top_k, top_k)
+        if vector_limit is None:
+            vector_limit = self._normalize_candidate_top_k(config.vector_top_k, top_k)
+        fts_limit = self._normalize_candidate_top_k(fts_top_k, top_k)
+        if fts_limit is None:
+            fts_limit = self._normalize_candidate_top_k(config.fts_top_k, top_k)
 
         embedder = HashingEmbedder(dims=config.dims)
         store = self._build_store(config)
@@ -281,14 +342,14 @@ class KnowledgeBaseManager:
                 embedder=embedder,
                 vector_store=store,
                 fts_index=fts,
-                alpha=config.hybrid_alpha,
+                alpha=alpha_value,
                 score_norm=config.score_norm,
             )
             rows = retriever.retrieve_with_scores(
                 query=query_text,
                 top_k=top_k,
-                vector_top_k=config.vector_top_k,
-                fts_top_k=config.fts_top_k,
+                vector_top_k=vector_limit,
+                fts_top_k=fts_limit,
             )
         finally:
             fts.close()
@@ -348,6 +409,152 @@ class KnowledgeBaseManager:
                 )
             )
         return hits
+
+    def _build_query_plan(
+        self,
+        query_text: str,
+        top_k: int,
+        mode: str,
+        config: KnowledgeBaseConfig,
+    ) -> KnowledgeBaseQueryPlan:
+        if mode == "auto":
+            return self._build_auto_query_plan(query_text, top_k, config)
+        if mode == "hybrid":
+            return KnowledgeBaseQueryPlan(
+                requested_mode=mode,
+                resolved_mode=mode,
+                query_type="manual",
+                alpha=self._clamp(config.hybrid_alpha, 0.0, 1.0),
+                vector_top_k=self._normalize_candidate_top_k(config.vector_top_k, top_k),
+                fts_top_k=self._normalize_candidate_top_k(config.fts_top_k, top_k),
+            )
+        return KnowledgeBaseQueryPlan(
+            requested_mode=mode,
+            resolved_mode=mode,
+            query_type="manual",
+        )
+
+    def _build_auto_query_plan(
+        self,
+        query_text: str,
+        top_k: int,
+        config: KnowledgeBaseConfig,
+    ) -> KnowledgeBaseQueryPlan:
+        if not self._fts_available(config):
+            return KnowledgeBaseQueryPlan(
+                requested_mode="auto",
+                resolved_mode="vector",
+                query_type="fts-unavailable",
+            )
+
+        keyword_score, semantic_score = self._query_signal_scores(query_text)
+        if keyword_score >= 4 and semantic_score <= 1:
+            return KnowledgeBaseQueryPlan(
+                requested_mode="auto",
+                resolved_mode="fts",
+                query_type="keyword",
+            )
+        if semantic_score >= 4 and keyword_score <= 1:
+            return KnowledgeBaseQueryPlan(
+                requested_mode="auto",
+                resolved_mode="vector",
+                query_type="semantic",
+            )
+
+        bias = semantic_score - keyword_score
+        base_alpha = self._clamp(config.hybrid_alpha, 0.0, 1.0)
+        if bias >= 2:
+            query_type = "semantic-heavy"
+            alpha = self._clamp(base_alpha + 0.18, 0.55, 0.82)
+            vector_top_k = self._scaled_candidate_top_k(top_k, factor=3.0, extra=2, cap=96)
+            fts_top_k = self._scaled_candidate_top_k(top_k, factor=1.8, extra=1, cap=64)
+        elif bias <= -2:
+            query_type = "keyword-heavy"
+            alpha = self._clamp(base_alpha - 0.18, 0.18, 0.45)
+            vector_top_k = self._scaled_candidate_top_k(top_k, factor=1.8, extra=1, cap=64)
+            fts_top_k = self._scaled_candidate_top_k(top_k, factor=3.0, extra=2, cap=96)
+        else:
+            query_type = "balanced"
+            alpha = self._clamp(base_alpha, 0.35, 0.65)
+            vector_top_k = self._scaled_candidate_top_k(top_k, factor=2.4, extra=2, cap=80)
+            fts_top_k = self._scaled_candidate_top_k(top_k, factor=2.4, extra=2, cap=80)
+
+        return KnowledgeBaseQueryPlan(
+            requested_mode="auto",
+            resolved_mode="hybrid",
+            query_type=query_type,
+            alpha=alpha,
+            vector_top_k=vector_top_k,
+            fts_top_k=fts_top_k,
+        )
+
+    @staticmethod
+    def _fts_available(config: KnowledgeBaseConfig) -> bool:
+        return bool(config.enable_fts) and config.store != "duckdb-vss"
+
+    @staticmethod
+    def _query_signal_scores(query_text: str) -> tuple[int, int]:
+        text = query_text.strip()
+        lower = text.lower()
+        token_count = len(_WORD_RE.findall(text))
+        char_count = len(text)
+
+        has_quotes = any(char in text for char in ('"', "'", "`"))
+        has_path_hint = bool(_PATH_HINT_RE.search(text))
+        has_code_hint = bool(_CODE_HINT_RE.search(text))
+        has_error_hint = bool(_ERROR_HINT_RE.search(lower))
+        has_keyword_ops = bool(_KEYWORD_OP_RE.search(lower))
+        has_semantic_hint = bool(_SEMANTIC_HINT_RE.search(lower))
+        short_query = token_count <= 5 or char_count <= 24
+        long_query = token_count >= 12 or char_count >= 64
+
+        keyword_score = 0
+        if has_quotes:
+            keyword_score += 2
+        if has_path_hint:
+            keyword_score += 2
+        if has_code_hint:
+            keyword_score += 2
+        if has_error_hint:
+            keyword_score += 1
+        if has_keyword_ops:
+            keyword_score += 1
+        if short_query:
+            keyword_score += 1
+
+        semantic_score = 0
+        if has_semantic_hint:
+            semantic_score += 2
+        if long_query:
+            semantic_score += 2
+        if token_count >= 8 and not has_code_hint:
+            semantic_score += 1
+        if ("?" in text or "？" in text) and token_count >= 6 and not has_code_hint:
+            semantic_score += 1
+
+        return keyword_score, semantic_score
+
+    @staticmethod
+    def _normalize_candidate_top_k(value: int | None, top_k: int) -> int | None:
+        if value is None:
+            return None
+        numeric = int(value)
+        if numeric <= 0:
+            return None
+        return max(top_k, numeric)
+
+    @staticmethod
+    def _scaled_candidate_top_k(top_k: int, factor: float, extra: int, cap: int) -> int:
+        scaled = int(round(top_k * factor)) + extra
+        return min(cap, max(top_k, scaled))
+
+    @staticmethod
+    def _clamp(value: float, lower: float, upper: float) -> float:
+        if value < lower:
+            return lower
+        if value > upper:
+            return upper
+        return value
 
     def _build_store(self, config: KnowledgeBaseConfig) -> object:
         table = self._table_name(config)

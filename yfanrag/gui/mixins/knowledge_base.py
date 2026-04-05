@@ -14,6 +14,7 @@ from ...knowledge_base import (
     STORE_CHOICES,
     KnowledgeBaseConfig,
     KnowledgeBaseHit,
+    KnowledgeBaseQueryPlan,
 )
 from ...loaders.text import DEFAULT_TEXT_EXTENSIONS
 
@@ -538,7 +539,7 @@ class AppKnowledgeBaseMixin:
             if top_k <= 0:
                 raise ValueError("top_k must be positive")
             config = self._collect_kb_config()
-            mode = self.kb_query_mode_var.get().strip() or "hybrid"
+            mode = self.kb_query_mode_var.get().strip() or "auto"
             if config.store == "duckdb-vss" and mode in {"hybrid", "fts"}:
                 mode = "vector"
                 self._kb_append_log(
@@ -555,6 +556,9 @@ class AppKnowledgeBaseMixin:
             self._kb_append_log("error", f"Query failed: {exc}")
             return
 
+        plan = self.kb_manager.last_query_plan
+        if plan is not None and plan.requested_mode == "auto":
+            self._kb_append_log("info", f"Adaptive route: {self._kb_plan_summary(plan)}")
         if not hits:
             self._kb_append_log("warn", "No retrieval results.")
             return
@@ -594,11 +598,22 @@ class AppKnowledgeBaseMixin:
             return "fts"
         return f"bm25={hit.score:.4f}"
 
+    @staticmethod
+    def _kb_plan_summary(plan: KnowledgeBaseQueryPlan) -> str:
+        parts = [f"{plan.requested_mode}->{plan.resolved_mode}", f"type={plan.query_type}"]
+        if plan.alpha is not None:
+            parts.append(f"alpha={plan.alpha:.2f}")
+        if plan.vector_top_k is not None:
+            parts.append(f"vec_k={plan.vector_top_k}")
+        if plan.fts_top_k is not None:
+            parts.append(f"fts_k={plan.fts_top_k}")
+        return ", ".join(parts)
+
     def _build_kb_context_for_user_text(self, user_text: str) -> tuple[str, str]:
         if not self.kb_use_context_var.get():
             return user_text, ""
 
-        mode = self.kb_query_mode_var.get().strip() or "hybrid"
+        mode = self.kb_query_mode_var.get().strip() or "auto"
         top_k = int(self.kb_context_top_k_var.get().strip() or "3")
         if top_k <= 0:
             raise ValueError("context top_k must be positive")
@@ -615,6 +630,10 @@ class AppKnowledgeBaseMixin:
         if not hits:
             return user_text, "KB context enabled, but no matching chunks found."
 
+        plan = self.kb_manager.last_query_plan
+        mode_note = mode
+        if plan is not None and plan.requested_mode == "auto":
+            mode_note = self._kb_plan_summary(plan)
         context_block = self._format_kb_context(hits)
         payload = (
             "Knowledge Base Context:\n"
@@ -622,7 +641,7 @@ class AppKnowledgeBaseMixin:
             f"{context_block}\n\n"
             f"User Question:\n{user_text}"
         )
-        note = f"Attached {len(hits)} KB chunks ({mode}) from {Path(config.db_path).name}."
+        note = f"Attached {len(hits)} KB chunks ({mode_note}) from {Path(config.db_path).name}."
         return payload, note
 
     @staticmethod

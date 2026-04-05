@@ -38,6 +38,7 @@ from .knowledge_base import (
     KnowledgeBaseHit,
     KnowledgeBaseIngestResult,
     KnowledgeBaseManager,
+    KnowledgeBaseQueryPlan,
     KnowledgeBaseStats,
 )
 from .models import Chunk, Document
@@ -96,6 +97,7 @@ __all__ = [
     "KnowledgeBaseHit",
     "KnowledgeBaseIngestResult",
     "KnowledgeBaseDeleteResult",
+    "KnowledgeBaseQueryPlan",
     "KnowledgeBaseManager",
     "STORE_CHOICES",
     "QUERY_MODE_CHOICES",

@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -80,3 +81,45 @@ def test_knowledge_base_empty_paths(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         manager.ingest_paths([], config)
 
+
+def test_knowledge_base_auto_routing_and_dynamic_params(tmp_path: Path) -> None:
+    _write_demo_docs(tmp_path)
+    manager = KnowledgeBaseManager()
+    config = _build_config(tmp_path)
+    manager.ingest_paths([str(tmp_path)], config)
+
+    manager.query("`alpha.md` line 12 error", top_k=3, mode="auto", config=config)
+    keyword_plan = manager.last_query_plan
+    assert keyword_plan is not None
+    assert keyword_plan.requested_mode == "auto"
+    assert keyword_plan.resolved_mode == "fts"
+    assert keyword_plan.query_type == "keyword"
+
+    manager.query(
+        "请解释 vector search 与 full text search 在语义召回质量、精确匹配能力和延迟成本上的区别，"
+        "并结合这个项目给出推荐使用策略与取舍建议？",
+        top_k=3,
+        mode="auto",
+        config=config,
+    )
+    semantic_plan = manager.last_query_plan
+    assert semantic_plan is not None
+    assert semantic_plan.resolved_mode == "vector"
+    assert semantic_plan.query_type == "semantic"
+
+    manager.query("sqlite vector search 区别", top_k=4, mode="auto", config=config)
+    hybrid_plan = manager.last_query_plan
+    assert hybrid_plan is not None
+    assert hybrid_plan.resolved_mode == "hybrid"
+    assert hybrid_plan.alpha is not None
+    assert hybrid_plan.vector_top_k is not None
+    assert hybrid_plan.fts_top_k is not None
+    assert hybrid_plan.vector_top_k >= 4
+    assert hybrid_plan.fts_top_k >= 4
+
+    no_fts_config = replace(config, enable_fts=False)
+    manager.query("sqlite keyword", top_k=3, mode="auto", config=no_fts_config)
+    fallback_plan = manager.last_query_plan
+    assert fallback_plan is not None
+    assert fallback_plan.resolved_mode == "vector"
+    assert fallback_plan.query_type == "fts-unavailable"
