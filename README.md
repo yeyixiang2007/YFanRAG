@@ -310,6 +310,21 @@ python examples/04_tk_chat_app.py
   - `context_max_chars_per_chunk`
   - `context_max_total_chars`
 
+### 反馈闭环学习（有帮助 / 没帮助）
+
+- 主聊天面板新增 `有帮助` / `没帮助` 按钮（针对最近一条 assistant 回答）。
+- 点击反馈后，系统会自动记录一条事件日志到：
+  - `~/.yfanrag/feedback/feedback_events.jsonl`
+- 当点击 `没帮助` 且当前回答包含有效引用（`doc_id/chunk_id`）时，会自动沉淀 hard case 到：
+  - `~/.yfanrag/feedback/hard_cases.jsonl`
+- 每次写入 hard case 后，系统会自动运行一次检索回归 benchmark（基于现有 hard cases），并在聊天日志显示：
+  - `cases`
+  - `hit_rate`
+  - `mrr`
+  - `recall`
+  - `latency p95`
+- 该机制用于持续沉淀“难题样本”，便于后续调参（路由、Multi-Query、RRF、Reranker）时快速验证是否回归。
+
 ### 在对话中启用知识库增强
 
 1. 在知识库管理窗口勾选 `Use KB Context In Chat`。

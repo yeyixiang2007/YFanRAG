@@ -636,6 +636,8 @@ class AppKnowledgeBaseMixin:
 
     def _build_kb_context_for_user_text(self, user_text: str) -> tuple[str, str]:
         if not self.kb_use_context_var.get():
+            self._set_kb_traceability_state(False, ())
+            self._clear_kb_feedback_context()
             return user_text, ""
 
         mode = self.kb_query_mode_var.get().strip() or "auto"
@@ -654,6 +656,8 @@ class AppKnowledgeBaseMixin:
             config=config,
         )
         if not raw_hits:
+            self._set_kb_traceability_state(False, ())
+            self._clear_kb_feedback_context()
             return user_text, "KB context enabled, but no matching chunks found."
         hits, compression = self.kb_manager.compress_hits_for_context(
             query_text=user_text,
@@ -662,17 +666,33 @@ class AppKnowledgeBaseMixin:
             max_chunks=top_k,
         )
         if not hits:
+            self._set_kb_traceability_state(False, ())
+            self._clear_kb_feedback_context()
             return user_text, "KB context enabled, but no compressed chunks retained."
 
         plan = self.kb_manager.last_query_plan
         mode_note = mode
         if plan is not None and (plan.requested_mode == "auto" or plan.fusion is not None):
             mode_note = self._kb_plan_summary(plan)
+        self._set_kb_feedback_context(
+            hits=hits,
+            plan=plan,
+            requested_mode=mode,
+            config=config,
+            plan_summary=mode_note,
+        )
+        trace_refs = [f"doc_id={hit.doc_id} chunk_id={hit.chunk_id}" for hit in hits]
+        self._set_kb_traceability_state(True, trace_refs)
         context_block = self._format_kb_context(hits)
         payload = (
             "Knowledge Base Context:\n"
             "Use the excerpts below when relevant. If unrelated, ignore them.\n\n"
             f"{context_block}\n\n"
+            "Answer Policy (MUST follow):\n"
+            "1) Output a confidence line exactly as: `证据: 充分` or `证据: 不足`.\n"
+            "2) Cite source ids in your answer using `doc_id=... chunk_id=...`.\n"
+            "3) If evidence is insufficient, say what is missing and avoid unsupported claims.\n"
+            "4) End with `引用来源:` and list used sources as bullet lines.\n\n"
             f"User Question:\n{user_text}"
         )
         note = (
@@ -694,3 +714,43 @@ class AppKnowledgeBaseMixin:
                 f"[{hit.rank}] doc_id={hit.doc_id} chunk_id={hit.chunk_id}\n{snippet}"
             )
         return "\n\n".join(blocks)
+
+    def _set_kb_feedback_context(
+        self,
+        *,
+        hits: Sequence[KnowledgeBaseHit],
+        plan: KnowledgeBaseQueryPlan | None,
+        requested_mode: str,
+        config: KnowledgeBaseConfig,
+        plan_summary: str,
+    ) -> None:
+        refs: list[dict[str, object]] = []
+        for hit in hits:
+            refs.append(
+                {
+                    "doc_id": hit.doc_id,
+                    "chunk_id": hit.chunk_id,
+                    "rank": hit.rank,
+                    "source": hit.source,
+                }
+            )
+        self.kb_feedback_refs = refs
+        self.kb_feedback_plan_summary = plan_summary
+        if plan is None:
+            resolved = requested_mode
+            query_type = "manual"
+        else:
+            resolved = plan.resolved_mode
+            query_type = plan.query_type
+        self.kb_feedback_requested_mode = requested_mode
+        self.kb_feedback_resolved_mode = resolved
+        self.kb_feedback_query_type = query_type
+        self.kb_feedback_db_path = config.db_path
+
+    def _clear_kb_feedback_context(self) -> None:
+        self.kb_feedback_refs = []
+        self.kb_feedback_plan_summary = ""
+        self.kb_feedback_requested_mode = ""
+        self.kb_feedback_resolved_mode = ""
+        self.kb_feedback_query_type = ""
+        self.kb_feedback_db_path = ""

@@ -119,6 +119,11 @@ class AppCoreMixin:
         else:
             self.send_button.state(["!disabled"])
             self.stop_button.state(["disabled"])
+        if hasattr(self, "_refresh_feedback_buttons"):
+            try:
+                self._refresh_feedback_buttons()
+            except Exception:
+                pass
         self._ensure_editable_text_fields()
 
     def _apply_provider_preset(self) -> None:
@@ -135,6 +140,17 @@ class AppCoreMixin:
         self.messages.clear()
         self.transcript.clear()
         self.stream_message_index = None
+        self.pending_feedback_context = None
+        if hasattr(self, "_set_feedback_target"):
+            try:
+                self._set_feedback_target(None)
+            except Exception:
+                pass
+        if hasattr(self, "_clear_kb_feedback_context"):
+            try:
+                self._clear_kb_feedback_context()
+            except Exception:
+                pass
         self._render_chat()
         self._append_log("system", "Conversation cleared.")
         self._set_status("Chat cleared", tone="normal")

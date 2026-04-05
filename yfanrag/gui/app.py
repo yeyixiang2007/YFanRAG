@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from queue import Queue
 import tkinter as tk
-from tkinter import scrolledtext
+from tkinter import scrolledtext, ttk
 
 from ..chat_providers import ChatApiClient, ChatMessage, PROVIDER_PRESETS
+from ..feedback_loop import FeedbackLoopStore
 from ..knowledge_base import KnowledgeBaseManager
 from ..secure_config import SecureConfigStore
 from .events import WorkerEvent
@@ -39,6 +40,7 @@ class TkChatApp(
         self.client = ChatApiClient()
         self.kb_manager = KnowledgeBaseManager()
         self.config_store = SecureConfigStore()
+        self.feedback_store = FeedbackLoopStore()
         self.queue: Queue[WorkerEvent] = Queue()
         self.messages: list[ChatMessage] = []
         self.transcript: list[dict[str, str]] = []
@@ -78,6 +80,18 @@ class TkChatApp(
         self.kb_stats_var = tk.StringVar(value="KB stats: no data")
         self.kb_use_context_var = tk.BooleanVar(value=False)
         self.kb_context_top_k_var = tk.StringVar(value="3")
+        self.kb_traceability_required = False
+        self.kb_traceability_refs: list[str] = []
+        self.kb_feedback_refs: list[dict[str, object]] = []
+        self.kb_feedback_plan_summary = ""
+        self.kb_feedback_requested_mode = ""
+        self.kb_feedback_resolved_mode = ""
+        self.kb_feedback_query_type = ""
+        self.kb_feedback_db_path = ""
+        self.pending_feedback_context: dict[str, object] | None = None
+        self.feedback_target: dict[str, object] | None = None
+        self.feedback_helpful_button: ttk.Button | None = None
+        self.feedback_unhelpful_button: ttk.Button | None = None
 
         self._configure_style()
         self._build_layout()

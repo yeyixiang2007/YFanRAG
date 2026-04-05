@@ -51,6 +51,30 @@ class AppLayoutMixin:
             background=[("active", "#991B1B"), ("disabled", "#374151")],
             foreground=[("disabled", "#9CA3AF")],
         )
+        style.configure(
+            "FeedbackGood.TButton",
+            background="#166534",
+            foreground="#ECFDF5",
+            padding=(10, 6),
+            font=("Segoe UI", 9, "bold"),
+        )
+        style.map(
+            "FeedbackGood.TButton",
+            background=[("active", "#15803D"), ("disabled", "#374151")],
+            foreground=[("disabled", "#9CA3AF")],
+        )
+        style.configure(
+            "FeedbackBad.TButton",
+            background="#9A3412",
+            foreground="#FFF7ED",
+            padding=(10, 6),
+            font=("Segoe UI", 9, "bold"),
+        )
+        style.map(
+            "FeedbackBad.TButton",
+            background=[("active", "#C2410C"), ("disabled", "#374151")],
+            foreground=[("disabled", "#9CA3AF")],
+        )
         style.configure("Tool.TCheckbutton", background="#111A2F", foreground="#D1D5DB", font=("Segoe UI", 10))
         style.configure(
             "TEntry",
@@ -396,4 +420,28 @@ class AppLayoutMixin:
             command=self._on_send,
         )
         self.send_button.pack(side=RIGHT)
+
+        feedback_row = ttk.Frame(composer, style="Card.TFrame")
+        feedback_row.pack(fill=X, padx=12, pady=(0, 10))
+        ttk.Label(
+            feedback_row,
+            text="Feedback on latest answer",
+            style="Small.TLabel",
+        ).pack(side=LEFT)
+        self.feedback_unhelpful_button = ttk.Button(
+            feedback_row,
+            text="没帮助",
+            style="FeedbackBad.TButton",
+            command=self._on_feedback_unhelpful,
+        )
+        self.feedback_unhelpful_button.pack(side=RIGHT)
+        self.feedback_helpful_button = ttk.Button(
+            feedback_row,
+            text="有帮助",
+            style="FeedbackGood.TButton",
+            command=self._on_feedback_helpful,
+        )
+        self.feedback_helpful_button.pack(side=RIGHT, padx=(0, 8))
+        self.feedback_helpful_button.state(["disabled"])
+        self.feedback_unhelpful_button.state(["disabled"])
         self._set_pending(False)

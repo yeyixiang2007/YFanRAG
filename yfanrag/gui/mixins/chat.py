@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from queue import Empty
 import threading
+import re
 from typing import Sequence
 from tkinter import END
 
+from ...benchmark import RetrievalItem
 from ...chat_providers import ChatApiSettings, ChatMessage, parse_json_dict
+from ...feedback_loop import FeedbackRecord, FeedbackReference
 from ..events import WorkerEvent
 from ..markdown import (
     MARKDOWN_FENCE_RE,
@@ -22,6 +25,18 @@ from ..markdown import (
 
 
 class AppChatMixin:
+    _TRACE_CONFIDENCE_RE = re.compile(
+        r"(?:证据\s*[：:]\s*(?:充分|不足)|evidence\s*[:：]\s*(?:sufficient|insufficient))",
+        re.IGNORECASE,
+    )
+    _TRACE_SOURCE_RE = re.compile(r"(?:doc_id\s*[=:]|chunk_id\s*[=:])", re.IGNORECASE)
+    _LOW_CONFIDENCE_HINT_RE = re.compile(
+        r"(?:证据不足|不确定|无法确认|未知|可能|insufficient|not sure|unknown|uncertain)",
+        re.IGNORECASE,
+    )
+    _TRACE_DOC_RE = re.compile(r"doc_id\s*[=:]\s*([^\s,;`]+)", re.IGNORECASE)
+    _TRACE_CHUNK_RE = re.compile(r"chunk_id\s*[=:]\s*([^\s,;`]+)", re.IGNORECASE)
+
     def _on_stop(self) -> None:
         if not self.pending:
             return
@@ -35,8 +50,10 @@ class AppChatMixin:
         if not user_text:
             return
 
+        self._set_feedback_target(None)
         outbound_text = user_text
         kb_note = ""
+        self._set_kb_traceability_state(False, ())
         try:
             outbound_text, kb_note = self._build_kb_context_for_user_text(user_text)
         except Exception as exc:
@@ -44,12 +61,15 @@ class AppChatMixin:
             self._set_status("KB context failed", tone="warn")
             outbound_text = user_text
             kb_note = ""
+            self._set_kb_traceability_state(False, ())
+            self._clear_kb_feedback_context()
 
         self.input_text.delete("1.0", END)
         self._append_log("user", user_text)
         if kb_note:
             self._append_log("system", kb_note)
         self.messages.append(ChatMessage(role="user", content=outbound_text))
+        self.pending_feedback_context = self._build_pending_feedback_context(user_text)
 
         try:
             settings = self._collect_settings()
@@ -182,15 +202,325 @@ class AppChatMixin:
     def _finalize_stream_message(self, final_text: str) -> None:
         if self.stream_message_index is None:
             return
+        feedback_context = dict(self.pending_feedback_context or {})
         idx = self.stream_message_index
         existing = self.transcript[idx]["text"].strip()
         fallback = final_text.strip()
         text = existing or fallback
+        text = self._ensure_traceable_kb_answer(text)
         self.transcript[idx]["text"] = text
         self.stream_message_index = None
+        self._set_kb_traceability_state(False, ())
         self._render_chat()
         if text:
             self.messages.append(ChatMessage(role="assistant", content=text))
+            query = str(feedback_context.get("query", "")).strip()
+            if query:
+                refs = self._merge_feedback_references(
+                    structured_refs=feedback_context.get("references", []),
+                    answer_text=text,
+                )
+                self._set_feedback_target(
+                    {
+                        "query": query,
+                        "answer": text,
+                        "references": refs,
+                        "requested_mode": feedback_context.get("requested_mode", ""),
+                        "resolved_mode": feedback_context.get("resolved_mode", ""),
+                        "query_type": feedback_context.get("query_type", ""),
+                        "plan_summary": feedback_context.get("plan_summary", ""),
+                        "kb_db_path": feedback_context.get("kb_db_path", ""),
+                    }
+                )
+        else:
+            self._set_feedback_target(None)
+        self.pending_feedback_context = None
+        self._clear_kb_feedback_context()
+
+    def _set_kb_traceability_state(self, required: bool, refs: Sequence[str]) -> None:
+        self.kb_traceability_required = bool(required)
+        unique: list[str] = []
+        seen: set[str] = set()
+        for item in refs:
+            value = " ".join(str(item).split()).strip()
+            if not value:
+                continue
+            key = value.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(value)
+        self.kb_traceability_refs = unique[:12]
+
+    def _ensure_traceable_kb_answer(self, text: str) -> str:
+        body = (text or "").strip()
+        if not body:
+            return body
+        if not bool(getattr(self, "kb_traceability_required", False)):
+            return body
+
+        has_confidence = bool(self._TRACE_CONFIDENCE_RE.search(body))
+        has_source = bool(self._TRACE_SOURCE_RE.search(body))
+        if has_confidence and has_source:
+            return body
+
+        confidence = "证据不足" if self._LOW_CONFIDENCE_HINT_RE.search(body) else "证据充分"
+        refs = list(getattr(self, "kb_traceability_refs", []) or [])[:5]
+        if not refs:
+            refs = ["doc_id=unknown chunk_id=unknown"]
+            confidence = "证据不足"
+        references = "\n".join(f"- {item}" for item in refs)
+        patch = (
+            "\n\n可溯源补充:\n"
+            f"证据: {confidence}\n"
+            "引用来源:\n"
+            f"{references}"
+        )
+        return f"{body}{patch}"
+
+    def _build_pending_feedback_context(self, user_text: str) -> dict[str, object]:
+        query = " ".join((user_text or "").split()).strip()
+        refs: list[FeedbackReference] = []
+        for item in list(getattr(self, "kb_feedback_refs", []) or []):
+            if not isinstance(item, dict):
+                continue
+            doc_id = self._normalize_feedback_ref_id(str(item.get("doc_id", "")))
+            chunk_id = self._normalize_feedback_ref_id(str(item.get("chunk_id", "")))
+            if not doc_id and not chunk_id:
+                continue
+            rank_value = item.get("rank")
+            rank: int | None = None
+            if isinstance(rank_value, int):
+                rank = rank_value
+            refs.append(
+                FeedbackReference(
+                    doc_id=doc_id,
+                    chunk_id=chunk_id,
+                    rank=rank,
+                    source=str(item.get("source", "")).strip() or None,
+                )
+            )
+        return {
+            "query": query,
+            "references": refs,
+            "requested_mode": str(getattr(self, "kb_feedback_requested_mode", "")).strip(),
+            "resolved_mode": str(getattr(self, "kb_feedback_resolved_mode", "")).strip(),
+            "query_type": str(getattr(self, "kb_feedback_query_type", "")).strip(),
+            "plan_summary": str(getattr(self, "kb_feedback_plan_summary", "")).strip(),
+            "kb_db_path": str(getattr(self, "kb_feedback_db_path", "")).strip(),
+        }
+
+    def _merge_feedback_references(
+        self,
+        structured_refs: object,
+        answer_text: str,
+    ) -> list[FeedbackReference]:
+        merged: list[FeedbackReference] = []
+        seen: set[tuple[str, str]] = set()
+
+        def _add(
+            doc_id: str,
+            chunk_id: str,
+            rank: int | None = None,
+            source: str | None = None,
+        ) -> None:
+            normalized_doc = self._normalize_feedback_ref_id(doc_id)
+            normalized_chunk = self._normalize_feedback_ref_id(chunk_id)
+            if not normalized_doc and not normalized_chunk:
+                return
+            key = (normalized_doc.lower(), normalized_chunk.lower())
+            if key in seen:
+                return
+            seen.add(key)
+            merged.append(
+                FeedbackReference(
+                    doc_id=normalized_doc,
+                    chunk_id=normalized_chunk,
+                    rank=rank,
+                    source=source,
+                )
+            )
+
+        if isinstance(structured_refs, list):
+            for ref in structured_refs:
+                if isinstance(ref, FeedbackReference):
+                    _add(ref.doc_id, ref.chunk_id, ref.rank, ref.source)
+                    continue
+                if isinstance(ref, dict):
+                    rank_value = ref.get("rank")
+                    rank: int | None = int(rank_value) if isinstance(rank_value, int) else None
+                    _add(
+                        str(ref.get("doc_id", "")),
+                        str(ref.get("chunk_id", "")),
+                        rank=rank,
+                        source=str(ref.get("source", "")).strip() or None,
+                    )
+
+        for ref in self._extract_traceability_refs_from_text(answer_text):
+            _add(ref.doc_id, ref.chunk_id, ref.rank, ref.source)
+        return merged
+
+    def _extract_traceability_refs_from_text(self, text: str) -> list[FeedbackReference]:
+        refs: list[FeedbackReference] = []
+        for line in (text or "").splitlines():
+            doc_match = self._TRACE_DOC_RE.search(line)
+            chunk_match = self._TRACE_CHUNK_RE.search(line)
+            if doc_match is None and chunk_match is None:
+                continue
+            doc_id = doc_match.group(1) if doc_match is not None else ""
+            chunk_id = chunk_match.group(1) if chunk_match is not None else ""
+            refs.append(
+                FeedbackReference(
+                    doc_id=self._normalize_feedback_ref_id(doc_id),
+                    chunk_id=self._normalize_feedback_ref_id(chunk_id),
+                )
+            )
+        return refs
+
+    @staticmethod
+    def _normalize_feedback_ref_id(value: str) -> str:
+        normalized = " ".join((value or "").split()).strip()
+        lowered = normalized.lower()
+        if lowered in {"", "unknown", "n/a", "na", "-", "none", "null"}:
+            return ""
+        return normalized
+
+    def _set_feedback_target(self, payload: dict[str, object] | None) -> None:
+        self.feedback_target = payload
+        self._refresh_feedback_buttons()
+
+    def _refresh_feedback_buttons(self) -> None:
+        enabled = bool(self.feedback_target) and not self.pending
+        for attr in ("feedback_helpful_button", "feedback_unhelpful_button"):
+            button = getattr(self, attr, None)
+            if button is None:
+                continue
+            if enabled:
+                button.state(["!disabled"])
+            else:
+                button.state(["disabled"])
+
+    def _on_feedback_helpful(self) -> None:
+        self._submit_feedback("helpful")
+
+    def _on_feedback_unhelpful(self) -> None:
+        self._submit_feedback("unhelpful")
+
+    def _submit_feedback(self, label: str) -> None:
+        target = self.feedback_target
+        if not target:
+            self._set_status("No answer available for feedback", tone="warn")
+            return
+
+        query = str(target.get("query", "")).strip()
+        answer = str(target.get("answer", "")).strip()
+        refs_raw = target.get("references", [])
+        refs = self._merge_feedback_references(refs_raw, answer)
+        if not query or not answer:
+            self._set_status("Feedback skipped: empty query or answer", tone="warn")
+            self._set_feedback_target(None)
+            return
+
+        top_k = 5
+        try:
+            top_k = max(1, int(self.kb_context_top_k_var.get().strip() or "5"))
+        except Exception:
+            top_k = 5
+
+        retrieve_fn = None
+        try:
+            config = self._collect_kb_config()
+            mode = str(target.get("requested_mode", "")).strip() or (
+                self.kb_query_mode_var.get().strip() or "auto"
+            )
+            if config.store == "duckdb-vss" and mode in {"hybrid", "fts"}:
+                mode = "vector"
+            retrieve_fn = lambda query_text, case_top_k: self._feedback_retrieve_items(
+                query_text=query_text,
+                top_k=case_top_k,
+                mode=mode,
+                config=config,
+            )
+        except Exception:
+            retrieve_fn = None
+
+        record = FeedbackRecord(
+            query=query,
+            answer=answer,
+            label=label,
+            references=refs,
+            requested_mode=str(target.get("requested_mode", "")).strip() or None,
+            resolved_mode=str(target.get("resolved_mode", "")).strip() or None,
+            query_type=str(target.get("query_type", "")).strip() or None,
+            plan_summary=str(target.get("plan_summary", "")).strip() or None,
+            kb_db_path=str(target.get("kb_db_path", "")).strip() or None,
+            metadata={
+                "provider": self._provider_key(),
+                "model": self.model_var.get().strip(),
+                "stream": bool(self.stream_var.get()),
+            },
+        )
+        try:
+            result = self.feedback_store.record_feedback(
+                record,
+                retrieve=retrieve_fn,
+                default_top_k=top_k,
+            )
+        except Exception as exc:
+            self._append_log("error", f"Feedback logging failed: {exc}")
+            self._set_status("Feedback save failed", tone="error")
+            return
+
+        label_text = "有帮助" if label == "helpful" else "没帮助"
+        summary = (
+            f"反馈已记录: {label_text} | log={result.feedback_log_path} "
+            f"| hard_cases={result.hard_cases_path}"
+        )
+        if label == "unhelpful":
+            if result.hard_case_added:
+                summary += " | hard_case=added"
+            else:
+                summary += " | hard_case=skipped(no refs)"
+        if result.benchmark_report is not None:
+            summary += f" | benchmark={self._feedback_benchmark_summary(result.benchmark_report)}"
+        elif result.benchmark_error:
+            summary += f" | benchmark_error={result.benchmark_error}"
+        self._append_log("system", summary)
+        self._set_status("Feedback saved", tone="ok")
+        self._set_feedback_target(None)
+
+    def _feedback_retrieve_items(
+        self,
+        query_text: str,
+        top_k: int,
+        mode: str,
+        config: object,
+    ) -> list[RetrievalItem]:
+        if top_k <= 0:
+            return []
+        hits = self.kb_manager.query(
+            query_text=query_text,
+            top_k=top_k,
+            mode=mode,
+            config=config,
+        )
+        return [RetrievalItem(chunk_id=hit.chunk_id, doc_id=hit.doc_id) for hit in hits]
+
+    @staticmethod
+    def _feedback_benchmark_summary(report: dict[str, object]) -> str:
+        total = int(report.get("total_cases", 0))
+        hit_rate = float(report.get("hit_rate", 0.0))
+        mrr = float(report.get("mrr", 0.0))
+        recall = float(report.get("recall", 0.0))
+        latency = report.get("latency_ms", {})
+        if isinstance(latency, dict):
+            p95 = float(latency.get("p95", 0.0))
+        else:
+            p95 = 0.0
+        return (
+            f"cases={total} hit_rate={hit_rate:.3f} mrr={mrr:.3f} "
+            f"recall={recall:.3f} p95={p95:.1f}ms"
+        )
 
     def _append_log(self, role: str, text: str) -> None:
         self.transcript.append({"role": role, "text": text})
