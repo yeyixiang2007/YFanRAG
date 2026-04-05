@@ -8,7 +8,7 @@
 - 多后端向量存储：`sqlite-vec`、`sqlite-vec1`、`duckdb-vss`、`memory`
 - 检索模式：`auto` 自适应路由、向量检索、FTS 检索、混合检索（向量 + FTS）
 - 数据维护：增量更新、按 `doc_id` 删除、跨后端迁移
-- 查询增强：字段过滤、范围过滤、Multi-Query 扩展、RRF 融合、二阶段重排（Reranker）、批处理与 embedding 缓存
+- 查询增强：字段过滤、范围过滤、Multi-Query 扩展、RRF 融合、二阶段重排（Reranker）、上下文压缩与去重、批处理与 embedding 缓存
 - 工程能力：Benchmark 报告、统一日志、慢查询提示、安全白名单
 
 ## 架构图
@@ -293,6 +293,22 @@ python examples/04_tk_chat_app.py
   - `reranker_backend`
   - `reranker_candidate_top_k`（默认 50）
   - `reranker_model` / `reranker_endpoint` / `reranker_api_key`
+
+### 上下文压缩与去重
+
+- 在聊天注入 KB 上下文前，系统会对召回 chunk 执行上下文压缩：
+  - 语义去重：基于文本重合 + 向量相似度剔除重复片段
+  - 关键信息抽取：按查询词重叠度抽取高价值句子
+  - 长度预算：限制每个 chunk 与整体上下文长度，减少“塞满但无效”
+- 默认行为：
+  - 先扩大候选召回，再压缩为 `Context TopK`
+  - 系统日志会显示压缩统计（如 `input->output`、去重数量、字符压缩比）
+- 关键参数（`KnowledgeBaseConfig`）：
+  - `context_compress_enabled`
+  - `context_dedup_similarity`
+  - `context_max_sentences_per_chunk`
+  - `context_max_chars_per_chunk`
+  - `context_max_total_chars`
 
 ### 在对话中启用知识库增强
 

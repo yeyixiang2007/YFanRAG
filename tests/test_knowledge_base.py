@@ -3,7 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from yfanrag.knowledge_base import KnowledgeBaseConfig, KnowledgeBaseManager
+from yfanrag.knowledge_base import (
+    KnowledgeBaseConfig,
+    KnowledgeBaseHit,
+    KnowledgeBaseManager,
+)
 
 
 def _write_demo_docs(root: Path) -> None:
@@ -29,6 +33,19 @@ def _build_config(tmp_path: Path) -> KnowledgeBaseConfig:
         disable_sqlite_extension=True,
         reranker_backend="heuristic",
         reranker_candidate_top_k=50,
+    )
+
+
+def _make_hit(rank: int, chunk_id: str, doc_id: str, text: str, source: str = "hybrid") -> KnowledgeBaseHit:
+    return KnowledgeBaseHit(
+        rank=rank,
+        source=source,
+        chunk_id=chunk_id,
+        doc_id=doc_id,
+        text=text,
+        start=0,
+        end=len(text),
+        score=1.0 / rank,
     )
 
 
@@ -200,3 +217,65 @@ def test_knowledge_base_disable_reranker(tmp_path: Path) -> None:
     plan = manager.last_query_plan
     assert plan is not None
     assert plan.reranker_backend is None
+
+
+def test_knowledge_base_context_compression_and_dedup(tmp_path: Path) -> None:
+    manager = KnowledgeBaseManager()
+    config = _build_config(tmp_path)
+    hits = [
+        _make_hit(
+            1,
+            "c1",
+            "d1",
+            "SQLite vector search combines embeddings for semantic matching. "
+            "It works well for paraphrased questions and long-tail queries.",
+        ),
+        _make_hit(
+            2,
+            "c2",
+            "d2",
+            "SQLite vector search combines embeddings for semantic matching. "
+            "It works well for paraphrased questions and tail queries.",
+        ),
+        _make_hit(
+            3,
+            "c3",
+            "d3",
+            "FTS search is better for exact keyword lookup and code symbol matching.",
+        ),
+    ]
+
+    compressed, meta = manager.compress_hits_for_context(
+        query_text="sqlite vector search 和 fts 区别",
+        hits=hits,
+        config=config,
+        max_chunks=2,
+    )
+
+    assert len(compressed) == 2
+    assert meta.duplicate_removed >= 1
+    assert meta.output_chunks == 2
+    assert meta.chars_after < meta.chars_before
+    assert all(len(hit.text) <= config.context_max_chars_per_chunk for hit in compressed)
+
+
+def test_knowledge_base_context_compression_disabled(tmp_path: Path) -> None:
+    manager = KnowledgeBaseManager()
+    config = replace(
+        _build_config(tmp_path),
+        context_compress_enabled=False,
+    )
+    hits = [
+        _make_hit(1, "c1", "d1", "A" * 180),
+        _make_hit(2, "c2", "d2", "B" * 120),
+    ]
+    compressed, meta = manager.compress_hits_for_context(
+        query_text="vector",
+        hits=hits,
+        config=config,
+        max_chunks=1,
+    )
+
+    assert len(compressed) == 1
+    assert compressed[0].text == hits[0].text
+    assert meta.duplicate_removed == 0

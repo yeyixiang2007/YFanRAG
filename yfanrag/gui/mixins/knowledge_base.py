@@ -646,14 +646,23 @@ class AppKnowledgeBaseMixin:
         if config.store == "duckdb-vss" and mode in {"hybrid", "fts"}:
             mode = "vector"
 
-        hits = self.kb_manager.query(
+        retrieval_top_k = max(top_k * 4, 12)
+        raw_hits = self.kb_manager.query(
             query_text=user_text,
-            top_k=top_k,
+            top_k=retrieval_top_k,
             mode=mode,
             config=config,
         )
-        if not hits:
+        if not raw_hits:
             return user_text, "KB context enabled, but no matching chunks found."
+        hits, compression = self.kb_manager.compress_hits_for_context(
+            query_text=user_text,
+            hits=raw_hits,
+            config=config,
+            max_chunks=top_k,
+        )
+        if not hits:
+            return user_text, "KB context enabled, but no compressed chunks retained."
 
         plan = self.kb_manager.last_query_plan
         mode_note = mode
@@ -666,7 +675,12 @@ class AppKnowledgeBaseMixin:
             f"{context_block}\n\n"
             f"User Question:\n{user_text}"
         )
-        note = f"Attached {len(hits)} KB chunks ({mode_note}) from {Path(config.db_path).name}."
+        note = (
+            f"Attached {len(hits)} KB chunks ({mode_note}) from {Path(config.db_path).name}; "
+            f"compressed {compression.input_chunks}->{compression.output_chunks}, "
+            f"dedup_removed={compression.duplicate_removed}, "
+            f"chars={compression.chars_before}->{compression.chars_after}."
+        )
         return payload, note
 
     @staticmethod

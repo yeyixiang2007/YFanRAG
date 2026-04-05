@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterable, Sequence
 import json
+import math
 import re
 import sqlite3
 import urllib.error
@@ -48,6 +49,7 @@ _CODE_HINT_RE = re.compile(r"(?:`[^`]+`|::|->|=>|==|!=|<=|>=|[{}()\[\]<>])")
 _RERANK_BACKEND_CHOICES = {"auto", "cross-encoder", "api", "heuristic", "none"}
 _CROSS_ENCODER_CACHE: dict[str, object] = {}
 _CROSS_ENCODER_FAILED_MODELS: set[str] = set()
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?\.])\s+|\n+")
 _EN_STOPWORDS = {
     "a",
     "an",
@@ -117,6 +119,11 @@ class KnowledgeBaseConfig:
     reranker_api_key_header: str = "Authorization"
     reranker_timeout_seconds: int = 30
     reranker_candidate_top_k: int = 50
+    context_compress_enabled: bool = True
+    context_dedup_similarity: float = 0.9
+    context_max_sentences_per_chunk: int = 2
+    context_max_chars_per_chunk: int = 420
+    context_max_total_chars: int = 2400
     path_whitelist: Sequence[str] | None = None
 
 
@@ -175,6 +182,15 @@ class KnowledgeBaseDeleteResult:
     doc_ids: list[str]
     vector_deleted: int
     fts_deleted: int
+
+
+@dataclass(frozen=True)
+class KnowledgeBaseContextCompression:
+    input_chunks: int
+    output_chunks: int
+    duplicate_removed: int
+    chars_before: int
+    chars_after: int
 
 
 class KnowledgeBaseManager:
@@ -362,6 +378,110 @@ class KnowledgeBaseManager:
         )
         self._last_query_plan = final_plan
         return reranked
+
+    def compress_hits_for_context(
+        self,
+        query_text: str,
+        hits: Sequence[KnowledgeBaseHit],
+        config: KnowledgeBaseConfig,
+        max_chunks: int,
+    ) -> tuple[list[KnowledgeBaseHit], KnowledgeBaseContextCompression]:
+        source_hits = [hit for hit in hits if hit.text and hit.text.strip()]
+        input_chunks = len(source_hits)
+        if max_chunks <= 0 or input_chunks == 0:
+            return [], KnowledgeBaseContextCompression(
+                input_chunks=input_chunks,
+                output_chunks=0,
+                duplicate_removed=0,
+                chars_before=0,
+                chars_after=0,
+            )
+
+        pool_size = max(max_chunks * 4, max_chunks)
+        candidates = source_hits[:pool_size]
+        chars_before = sum(len(" ".join(hit.text.split())) for hit in candidates)
+        if not config.context_compress_enabled:
+            clipped = self._truncate_hits(candidates, max_chunks)
+            chars_after = sum(len(hit.text) for hit in clipped)
+            return clipped, KnowledgeBaseContextCompression(
+                input_chunks=input_chunks,
+                output_chunks=len(clipped),
+                duplicate_removed=0,
+                chars_before=chars_before,
+                chars_after=chars_after,
+            )
+
+        threshold = self._normalize_context_similarity_threshold(config.context_dedup_similarity)
+        sentence_limit = self._normalize_context_sentence_limit(config.context_max_sentences_per_chunk)
+        per_chunk_chars = self._normalize_context_chars_per_chunk(config.context_max_chars_per_chunk)
+        total_chars = self._normalize_context_total_chars(config.context_max_total_chars)
+
+        query_terms = [
+            term.lower()
+            for term in _WORD_RE.findall(query_text)
+            if self._is_query_keyword(term)
+        ]
+        unique_query_terms = list(dict.fromkeys(query_terms))
+
+        dedup_hits: list[KnowledgeBaseHit] = []
+        dedup_texts: list[str] = []
+        dedup_vectors: list[list[float]] = []
+        vector_dims = max(128, config.dims * 16)
+        duplicate_removed = 0
+
+        for hit in candidates:
+            normalized_text = " ".join(hit.text.split())
+            if not normalized_text:
+                continue
+            compressed_text = self._extract_key_sentences(
+                text=normalized_text,
+                query_terms=unique_query_terms,
+                max_sentences=sentence_limit,
+                max_chars=per_chunk_chars,
+            )
+            if not compressed_text:
+                compressed_text = self._clip_text(normalized_text, per_chunk_chars)
+            candidate_vector = self._token_hash_vector(compressed_text, dims=vector_dims)
+            if self._is_semantic_duplicate(
+                text=compressed_text,
+                vector=candidate_vector,
+                existing_texts=dedup_texts,
+                existing_vectors=dedup_vectors,
+                similarity_threshold=threshold,
+            ):
+                duplicate_removed += 1
+                continue
+            dedup_texts.append(compressed_text)
+            dedup_vectors.append(candidate_vector)
+            dedup_hits.append(replace(hit, text=compressed_text))
+            if len(dedup_hits) >= max_chunks:
+                break
+
+        if not dedup_hits:
+            first = candidates[0]
+            fallback_text = self._extract_key_sentences(
+                text=" ".join(first.text.split()),
+                query_terms=unique_query_terms,
+                max_sentences=sentence_limit,
+                max_chars=per_chunk_chars,
+            )
+            if not fallback_text:
+                fallback_text = self._clip_text(" ".join(first.text.split()), per_chunk_chars)
+            dedup_hits = [replace(first, text=fallback_text)]
+
+        budgeted_hits = self._apply_context_char_budget(
+            hits=dedup_hits,
+            max_total_chars=total_chars,
+        )
+        final_hits = self._truncate_hits(budgeted_hits, max_chunks)
+        chars_after = sum(len(hit.text) for hit in final_hits)
+        return final_hits, KnowledgeBaseContextCompression(
+            input_chunks=input_chunks,
+            output_chunks=len(final_hits),
+            duplicate_removed=duplicate_removed,
+            chars_before=chars_before,
+            chars_after=chars_after,
+        )
 
     def list_doc_ids(
         self,
@@ -923,6 +1043,210 @@ class KnowledgeBaseManager:
         if numeric > 200:
             numeric = 200
         return max(top_k, numeric)
+
+    @staticmethod
+    def _normalize_context_similarity_threshold(value: float) -> float:
+        numeric = float(value)
+        if numeric < 0.6:
+            return 0.6
+        if numeric > 0.99:
+            return 0.99
+        return numeric
+
+    @staticmethod
+    def _normalize_context_sentence_limit(value: int) -> int:
+        numeric = int(value)
+        if numeric < 1:
+            return 1
+        if numeric > 5:
+            return 5
+        return numeric
+
+    @staticmethod
+    def _normalize_context_chars_per_chunk(value: int) -> int:
+        numeric = int(value)
+        if numeric < 120:
+            return 120
+        if numeric > 1200:
+            return 1200
+        return numeric
+
+    @staticmethod
+    def _normalize_context_total_chars(value: int) -> int:
+        numeric = int(value)
+        if numeric < 300:
+            return 300
+        if numeric > 12000:
+            return 12000
+        return numeric
+
+    @staticmethod
+    def _clip_text(text: str, max_chars: int) -> str:
+        normalized = " ".join((text or "").split()).strip()
+        if len(normalized) <= max_chars:
+            return normalized
+        head = normalized[: max(24, max_chars - 3)].rstrip()
+        return f"{head}..."
+
+    def _extract_key_sentences(
+        self,
+        text: str,
+        query_terms: Sequence[str],
+        max_sentences: int,
+        max_chars: int,
+    ) -> str:
+        compact = " ".join((text or "").split()).strip()
+        if not compact:
+            return ""
+        if len(compact) <= max_chars and max_sentences >= 2:
+            return compact
+
+        raw_parts = _SENTENCE_SPLIT_RE.split(text)
+        parts = [" ".join(part.split()).strip() for part in raw_parts]
+        sentences = [part for part in parts if part]
+        if not sentences:
+            return self._clip_text(compact, max_chars)
+
+        query_set = set(query_terms)
+        scored: list[tuple[float, int, str]] = []
+        for idx, sentence in enumerate(sentences):
+            terms = [item.lower() for item in _WORD_RE.findall(sentence)]
+            if not terms:
+                continue
+            term_set = set(terms)
+            overlap = 0
+            if query_set:
+                overlap = sum(1 for term in query_set if term in term_set)
+            overlap_ratio = overlap / float(max(1, len(query_set)))
+            density = float(overlap) / float(max(1, len(terms)))
+            digits_bonus = 0.0
+            if any(ch.isdigit() for ch in sentence):
+                digits_bonus = 0.08
+            position_bonus = 0.15 / float(idx + 1)
+            length_penalty = 0.0
+            if len(sentence) > 220:
+                length_penalty = -0.05
+            score = overlap_ratio * 2.8 + density * 0.7 + digits_bonus + position_bonus + length_penalty
+            if not query_set:
+                score = position_bonus + digits_bonus - max(0, len(sentence) - 180) / 5000.0
+            scored.append((score, idx, sentence))
+
+        if not scored:
+            return self._clip_text(compact, max_chars)
+
+        best = sorted(scored, key=lambda item: (item[0], -item[1]), reverse=True)
+        selected = sorted(best[:max_sentences], key=lambda item: item[1])
+        assembled = " ".join(item[2] for item in selected).strip()
+        if not assembled:
+            assembled = compact
+        return self._clip_text(assembled, max_chars)
+
+    def _is_semantic_duplicate(
+        self,
+        text: str,
+        vector: Sequence[float],
+        existing_texts: Sequence[str],
+        existing_vectors: Sequence[Sequence[float]],
+        similarity_threshold: float,
+    ) -> bool:
+        normalized = " ".join(text.split()).strip().lower()
+        candidate_tokens = {
+            token
+            for token in _WORD_RE.findall(normalized)
+            if self._is_query_keyword(token)
+        }
+        for existing_text, existing_vector in zip(existing_texts, existing_vectors):
+            normalized_existing = " ".join(existing_text.split()).strip().lower()
+            if normalized == normalized_existing:
+                return True
+            if normalized in normalized_existing or normalized_existing in normalized:
+                shorter = min(len(normalized), len(normalized_existing))
+                longer = max(len(normalized), len(normalized_existing))
+                if shorter > 0 and shorter / float(longer) >= 0.82:
+                    return True
+            existing_tokens = {
+                token
+                for token in _WORD_RE.findall(normalized_existing)
+                if self._is_query_keyword(token)
+            }
+            if candidate_tokens and existing_tokens:
+                union = candidate_tokens | existing_tokens
+                if union:
+                    jaccard = len(candidate_tokens & existing_tokens) / float(len(union))
+                    if jaccard >= 0.86:
+                        return True
+            cosine = self._cosine_similarity(vector, existing_vector)
+            if cosine >= similarity_threshold:
+                return True
+        return False
+
+    @staticmethod
+    def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
+        if not a or not b or len(a) != len(b):
+            return 0.0
+        dot = sum(float(x) * float(y) for x, y in zip(a, b))
+        norm_a = math.sqrt(sum(float(x) * float(x) for x in a))
+        norm_b = math.sqrt(sum(float(y) * float(y) for y in b))
+        if norm_a == 0.0 or norm_b == 0.0:
+            return 0.0
+        return dot / float(norm_a * norm_b)
+
+    @staticmethod
+    def _token_hash_vector(text: str, dims: int) -> list[float]:
+        if dims <= 0:
+            return []
+        vector = [0.0] * dims
+        tokens = [token.lower() for token in _WORD_RE.findall(text)]
+        if not tokens:
+            return vector
+        for token in tokens:
+            idx = KnowledgeBaseManager._stable_token_hash(token, dims)
+            vector[idx] += 1.0
+        norm = math.sqrt(sum(value * value for value in vector))
+        if norm <= 0.0:
+            return vector
+        return [value / norm for value in vector]
+
+    @staticmethod
+    def _stable_token_hash(token: str, mod: int) -> int:
+        acc = 0
+        for idx, ch in enumerate(token):
+            acc += (idx + 1) * ord(ch)
+        return acc % mod
+
+    def _apply_context_char_budget(
+        self,
+        hits: Sequence[KnowledgeBaseHit],
+        max_total_chars: int,
+    ) -> list[KnowledgeBaseHit]:
+        if not hits:
+            return []
+        if max_total_chars <= 0:
+            return list(hits)
+
+        output: list[KnowledgeBaseHit] = []
+        used = 0
+        for hit in hits:
+            text = " ".join(hit.text.split()).strip()
+            if not text:
+                continue
+            remaining = max_total_chars - used
+            if remaining <= 0:
+                break
+            if len(text) <= remaining:
+                output.append(replace(hit, text=text))
+                used += len(text)
+                continue
+            if remaining < 80 and output:
+                break
+            clipped = self._clip_text(text, remaining)
+            output.append(replace(hit, text=clipped))
+            used += len(clipped)
+            break
+        if not output:
+            first = hits[0]
+            output = [replace(first, text=self._clip_text(first.text, max_total_chars))]
+        return output
 
     @staticmethod
     def _resolve_multi_query_count(config: KnowledgeBaseConfig) -> int:
