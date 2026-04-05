@@ -23,6 +23,9 @@ duckdb = [
 rerank = [
     "sentence-transformers>=2.7.0",
 ]
+secure = [
+    "keyring>=25.0",
+]
 
 [project.scripts]
 yfanrag = "yfanrag.cli:main"

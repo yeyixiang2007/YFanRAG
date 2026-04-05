@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from threading import RLock
 from typing import List, Sequence
-import sqlite3
 from time import perf_counter
+import sqlite3
 
 from ..interfaces import FieldFilters, RangeFilters
 from ..models import Chunk
 from ..observability import log_slow_query
+from ..sql_utils import connect_sqlite, delete_by_doc_ids_batched, validate_identifier
 
 try:
     import sqlite_vec
@@ -25,6 +27,7 @@ class SqliteVecStore:
     distance_metric: str | None = None
 
     _conn: sqlite3.Connection = field(init=False, repr=False)
+    _lock: RLock = field(init=False, repr=False, default_factory=RLock)
 
     _eq_filter_columns = {
         "chunk_id": "chunk_id",
@@ -40,14 +43,16 @@ class SqliteVecStore:
     }
 
     def __post_init__(self) -> None:
-        self._conn = sqlite3.connect(self.path)
-        self._conn.row_factory = sqlite3.Row
-        self._load_extension()
-        if self.embedding_dim is not None:
-            self._ensure_schema(self.embedding_dim)
+        self.table = validate_identifier(self.table, label="vector table")
+        self._conn = connect_sqlite(self.path)
+        with self._lock:
+            self._load_extension()
+            if self.embedding_dim is not None:
+                self._ensure_schema(self.embedding_dim)
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     def add(self, chunks: Sequence[Chunk], embeddings: Sequence[Sequence[float]]) -> None:
         if len(chunks) != len(embeddings):
@@ -56,49 +61,50 @@ class SqliteVecStore:
             return
 
         dim = self._infer_dim(embeddings)
-        self._ensure_schema(dim)
+        with self._lock:
+            self._ensure_schema(dim)
 
-        rows = []
-        has_index_col = self._has_column("meta_index")
-        for chunk, embedding in zip(chunks, embeddings):
-            index_value = chunk.metadata.get("index")
-            if has_index_col:
-                rows.append(
-                    (
-                        chunk.chunk_id,
-                        chunk.doc_id,
-                        chunk.start,
-                        chunk.end,
-                        index_value,
-                        self._serialize(embedding),
-                        chunk.text,
+            rows = []
+            has_index_col = self._has_column("meta_index")
+            for chunk, embedding in zip(chunks, embeddings):
+                index_value = chunk.metadata.get("index")
+                if has_index_col:
+                    rows.append(
+                        (
+                            chunk.chunk_id,
+                            chunk.doc_id,
+                            chunk.start,
+                            chunk.end,
+                            index_value,
+                            self._serialize(embedding),
+                            chunk.text,
+                        )
                     )
+                else:
+                    rows.append(
+                        (
+                            chunk.chunk_id,
+                            chunk.doc_id,
+                            chunk.start,
+                            chunk.end,
+                            self._serialize(embedding),
+                            chunk.text,
+                        )
+                    )
+            if has_index_col:
+                sql = (
+                    f"INSERT INTO {self.table} "
+                    "(chunk_id, doc_id, start, end, meta_index, embedding, text) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)"
                 )
             else:
-                rows.append(
-                    (
-                        chunk.chunk_id,
-                        chunk.doc_id,
-                        chunk.start,
-                        chunk.end,
-                        self._serialize(embedding),
-                        chunk.text,
-                    )
+                sql = (
+                    f"INSERT INTO {self.table} "
+                    "(chunk_id, doc_id, start, end, embedding, text) "
+                    "VALUES (?, ?, ?, ?, ?, ?)"
                 )
-        if has_index_col:
-            sql = (
-                f"INSERT INTO {self.table} "
-                "(chunk_id, doc_id, start, end, meta_index, embedding, text) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)"
-            )
-        else:
-            sql = (
-                f"INSERT INTO {self.table} "
-                "(chunk_id, doc_id, start, end, embedding, text) "
-                "VALUES (?, ?, ?, ?, ?, ?)"
-            )
-        self._conn.executemany(sql, rows)
-        self._conn.commit()
+            self._conn.executemany(sql, rows)
+            self._conn.commit()
 
     def query(
         self,
@@ -111,35 +117,36 @@ class SqliteVecStore:
         if top_k <= 0:
             return []
         dim = len(embedding)
-        self._ensure_schema(dim)
-        where_clauses = ["embedding MATCH ?", "k = ?"]
-        params: list[object] = [self._serialize(embedding), top_k]
+        with self._lock:
+            self._ensure_schema(dim)
+            where_clauses = ["embedding MATCH ?", "k = ?"]
+            params: list[object] = [self._serialize(embedding), top_k]
 
-        for key, value in (filters or {}).items():
-            column = self._resolve_filter_column(key, is_range=False)
-            where_clauses.append(f"{column} = ?")
-            params.append(value)
+            for key, value in (filters or {}).items():
+                column = self._resolve_filter_column(key, is_range=False)
+                where_clauses.append(f"{column} = ?")
+                params.append(value)
 
-        for key, (lower, upper) in (range_filters or {}).items():
-            column = self._resolve_filter_column(key, is_range=True)
-            if lower is not None:
-                where_clauses.append(f"{column} >= ?")
-                params.append(lower)
-            if upper is not None:
-                where_clauses.append(f"{column} <= ?")
-                params.append(upper)
+            for key, (lower, upper) in (range_filters or {}).items():
+                column = self._resolve_filter_column(key, is_range=True)
+                if lower is not None:
+                    where_clauses.append(f"{column} >= ?")
+                    params.append(lower)
+                if upper is not None:
+                    where_clauses.append(f"{column} <= ?")
+                    params.append(upper)
 
-        select_cols = "chunk_id, doc_id, start, end, text, distance"
-        has_index_col = self._has_column("meta_index")
-        if has_index_col:
-            select_cols += ", meta_index"
+            select_cols = "chunk_id, doc_id, start, end, text, distance"
+            has_index_col = self._has_column("meta_index")
+            if has_index_col:
+                select_cols += ", meta_index"
 
-        sql = (
-            f"SELECT {select_cols} "
-            f"FROM {self.table} "
-            f"WHERE {' AND '.join(where_clauses)}"
-        )
-        rows = self._conn.execute(sql, params).fetchall()
+            sql = (
+                f"SELECT {select_cols} "
+                f"FROM {self.table} "
+                f"WHERE {' AND '.join(where_clauses)}"
+            )
+            rows = self._conn.execute(sql, params).fetchall()
         results: List[Chunk] = []
         for row in rows:
             metadata = {"distance": row["distance"]}
@@ -163,14 +170,10 @@ class SqliteVecStore:
         ids = [doc_id for doc_id in doc_ids if doc_id]
         if not ids:
             return 0
-        if not self._table_exists():
-            return 0
-
-        placeholders = ", ".join(["?"] * len(ids))
-        sql = f"DELETE FROM {self.table} WHERE doc_id IN ({placeholders})"
-        cursor = self._conn.execute(sql, ids)
-        self._conn.commit()
-        return cursor.rowcount
+        with self._lock:
+            if not self._table_exists():
+                return 0
+            return delete_by_doc_ids_batched(self._conn, self.table, ids)
 
     def _load_extension(self) -> None:
         if sqlite_vec is None:

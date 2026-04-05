@@ -43,3 +43,28 @@ def test_text_loader_path_whitelist_blocks_unauthorized(tmp_path: Path):
     )
     with pytest.raises(ValueError):
         loader.load()
+
+
+def test_text_loader_falls_back_for_gbk_files(tmp_path: Path):
+    path = tmp_path / "note.txt"
+    path.write_bytes("中文内容".encode("gb18030"))
+
+    loader = TextFileLoader(paths=[str(path)])
+    docs = loader.load()
+
+    assert len(docs) == 1
+    assert docs[0].text == "中文内容"
+    assert docs[0].metadata["encoding"] == "gb18030"
+
+
+def test_text_loader_skips_large_files(tmp_path: Path):
+    (tmp_path / "small.txt").write_text("ok", encoding="utf-8")
+    (tmp_path / "large.txt").write_text("0123456789", encoding="utf-8")
+
+    loader = TextFileLoader(
+        paths=[str(tmp_path)],
+        max_file_size_bytes=5,
+    )
+    docs = loader.load()
+
+    assert [doc.title for doc in docs] == ["small"]

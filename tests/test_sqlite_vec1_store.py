@@ -1,3 +1,5 @@
+import pytest
+
 from yfanrag.models import Chunk
 from yfanrag.vectorstores.sqlite_vec1 import SqliteVec1Store
 
@@ -54,3 +56,40 @@ def test_sqlite_vec1_store_extension_path_whitelist(tmp_path):
         assert "sqlite extension path is not in whitelist" in str(exc)
     else:
         raise AssertionError("expected ValueError for extension whitelist")
+
+
+def test_sqlite_vec1_store_delete_by_doc_ids_batches_large_input(tmp_path):
+    db_path = tmp_path / "vec1_delete_batch.db"
+    store = SqliteVec1Store(
+        path=str(db_path),
+        embedding_dim=4,
+        load_extension=False,
+    )
+    chunks = [
+        Chunk(
+            chunk_id=f"c{i}",
+            doc_id=f"d{i}",
+            text=f"doc {i}",
+            start=i,
+            end=i + 1,
+        )
+        for i in range(1100)
+    ]
+    embeddings = [[1.0, 0.0, 0.0, 0.0] for _ in chunks]
+    store.add(chunks, embeddings)
+
+    deleted = store.delete_by_doc_ids([chunk.doc_id for chunk in chunks])
+    remaining = store.query([1.0, 0.0, 0.0, 0.0], top_k=1)
+    store.close()
+
+    assert deleted == 1100
+    assert remaining == []
+
+
+def test_sqlite_vec1_store_rejects_unsafe_table_names(tmp_path):
+    with pytest.raises(ValueError):
+        SqliteVec1Store(
+            path=str(tmp_path / "vec1_bad.db"),
+            table="vec1; DROP TABLE x;",
+            load_extension=False,
+        )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from threading import RLock
 from typing import Dict, List, Sequence
 import json
 import math
@@ -14,6 +15,7 @@ from ..interfaces import FieldFilters, RangeFilters
 from ..models import Chunk
 from ..observability import log_slow_query
 from ..security import ensure_path_in_whitelist, whitelist_from_env
+from ..sql_utils import connect_sqlite, delete_by_doc_ids_batched, validate_identifier
 
 
 @dataclass
@@ -28,6 +30,7 @@ class SqliteVec1Store:
     extension_whitelist: Sequence[str] | None = None
 
     _conn: sqlite3.Connection = field(init=False, repr=False)
+    _lock: RLock = field(init=False, repr=False, default_factory=RLock)
     _vec1_enabled: bool = field(init=False, default=False, repr=False)
 
     _eq_filter_columns = {
@@ -44,18 +47,21 @@ class SqliteVec1Store:
     }
 
     def __post_init__(self) -> None:
-        self._conn = sqlite3.connect(self.path)
-        self._conn.row_factory = sqlite3.Row
-        self._ensure_data_schema()
+        self.table = validate_identifier(self.table, label="vector table")
+        self.index_table = validate_identifier(self.index_table, label="vector index table")
+        self._conn = connect_sqlite(self.path)
+        with self._lock:
+            self._ensure_data_schema()
 
-        self._vec1_enabled = False
-        if self.load_extension:
-            self._vec1_enabled = self._load_vec1_extension()
-            if self._vec1_enabled:
-                self._ensure_vec1_schema()
+            self._vec1_enabled = False
+            if self.load_extension:
+                self._vec1_enabled = self._load_vec1_extension()
+                if self._vec1_enabled:
+                    self._ensure_vec1_schema()
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     def add(self, chunks: Sequence[Chunk], embeddings: Sequence[Sequence[float]]) -> None:
         if len(chunks) != len(embeddings):
@@ -64,31 +70,32 @@ class SqliteVec1Store:
             return
 
         dim = self._infer_dim(embeddings)
-        self._ensure_dim(dim)
+        with self._lock:
+            self._ensure_dim(dim)
 
-        rows = []
-        for chunk, embedding in zip(chunks, embeddings):
-            rows.append(
-                (
-                    chunk.chunk_id,
-                    chunk.doc_id,
-                    chunk.start,
-                    chunk.end,
-                    chunk.metadata.get("index"),
-                    chunk.text,
-                    self._serialize_float32(embedding),
+            rows = []
+            for chunk, embedding in zip(chunks, embeddings):
+                rows.append(
+                    (
+                        chunk.chunk_id,
+                        chunk.doc_id,
+                        chunk.start,
+                        chunk.end,
+                        chunk.metadata.get("index"),
+                        chunk.text,
+                        self._serialize_float32(embedding),
+                    )
                 )
+            self._conn.executemany(
+                f"INSERT INTO {self.table} "
+                "(chunk_id, doc_id, start, end_pos, meta_index, text, embedding) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                rows,
             )
-        self._conn.executemany(
-            f"INSERT INTO {self.table} "
-            "(chunk_id, doc_id, start, end_pos, meta_index, text, embedding) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            rows,
-        )
-        self._conn.commit()
+            self._conn.commit()
 
-        if self._vec1_enabled:
-            self._sync_vec1_index()
+            if self._vec1_enabled:
+                self._sync_vec1_index()
 
     def query(
         self,
@@ -107,20 +114,21 @@ class SqliteVec1Store:
                 f"embedding dimension mismatch: expected {self.embedding_dim}, got {len(embedding)}"
             )
 
-        if self._vec1_enabled:
-            try:
-                ids = self._query_vec1_rowids(embedding, top_k, filters, range_filters)
-                if ids:
-                    result = self._load_chunks_by_ids(ids, embedding)
-                    elapsed_ms = (perf_counter() - start_ts) * 1000.0
-                    log_slow_query("SqliteVec1Store.query", elapsed_ms, f"rows={len(result)}")
-                    return result
-            except sqlite3.Error:
-                # If vec1 query shape changes or extension is unavailable at runtime,
-                # continue with deterministic exact search fallback.
-                pass
+        with self._lock:
+            if self._vec1_enabled:
+                try:
+                    ids = self._query_vec1_rowids(embedding, top_k, filters, range_filters)
+                    if ids:
+                        result = self._load_chunks_by_ids(ids, embedding)
+                        elapsed_ms = (perf_counter() - start_ts) * 1000.0
+                        log_slow_query("SqliteVec1Store.query", elapsed_ms, f"rows={len(result)}")
+                        return result
+                except sqlite3.Error:
+                    # If vec1 query shape changes or extension is unavailable at runtime,
+                    # continue with deterministic exact search fallback.
+                    pass
 
-        result = self._query_exhaustive(embedding, top_k, filters, range_filters)
+            result = self._query_exhaustive(embedding, top_k, filters, range_filters)
         elapsed_ms = (perf_counter() - start_ts) * 1000.0
         log_slow_query("SqliteVec1Store.query", elapsed_ms, f"rows={len(result)}")
         return result
@@ -129,15 +137,11 @@ class SqliteVec1Store:
         ids = [doc_id for doc_id in doc_ids if doc_id]
         if not ids:
             return 0
-        placeholders = ", ".join(["?"] * len(ids))
-        cursor = self._conn.execute(
-            f"DELETE FROM {self.table} WHERE doc_id IN ({placeholders})",
-            ids,
-        )
-        self._conn.commit()
-        if self._vec1_enabled:
-            self._sync_vec1_index()
-        return cursor.rowcount
+        with self._lock:
+            deleted = delete_by_doc_ids_batched(self._conn, self.table, ids)
+            if self._vec1_enabled:
+                self._sync_vec1_index()
+            return deleted
 
     def _ensure_data_schema(self) -> None:
         self._conn.execute(

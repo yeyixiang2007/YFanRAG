@@ -279,3 +279,51 @@ def test_knowledge_base_context_compression_disabled(tmp_path: Path) -> None:
     assert len(compressed) == 1
     assert compressed[0].text == hits[0].text
     assert meta.duplicate_removed == 0
+
+
+def test_knowledge_base_context_sentence_split_preserves_versions_and_titles(tmp_path: Path) -> None:
+    manager = KnowledgeBaseManager()
+
+    sentences = manager._split_context_sentences(
+        "Version 1.2.3 is current. Mr. Smith approved the release."
+    )
+
+    assert sentences == [
+        "Version 1.2.3 is current.",
+        "Mr. Smith approved the release.",
+    ]
+
+
+def test_knowledge_base_context_sentence_split_keeps_code_blocks_together(tmp_path: Path) -> None:
+    manager = KnowledgeBaseManager()
+
+    sentences = manager._split_context_sentences(
+        "def run():\n    return version_1.2.3\n\nNext sentence."
+    )
+
+    assert sentences[0] == "def run(): return version_1.2.3"
+    assert sentences[1] == "Next sentence."
+
+
+def test_knowledge_base_cross_encoder_preload_is_non_blocking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = KnowledgeBaseManager()
+    config = _build_config(tmp_path)
+    requested: list[str] = []
+
+    monkeypatch.setattr(manager, "_get_cached_cross_encoder", lambda model_name: None)
+    monkeypatch.setattr(manager, "_start_cross_encoder_preload", requested.append)
+
+    scores = manager._try_cross_encoder_rerank_scores(
+        query_text="vector search",
+        hits=[
+            _make_hit(1, "c1", "d1", "Vector search uses embeddings."),
+            _make_hit(2, "c2", "d2", "FTS search uses keywords."),
+        ],
+        config=config,
+    )
+
+    assert scores is None
+    assert requested == [config.reranker_model]

@@ -7,13 +7,28 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
 import base64
+import binascii
 import ctypes
 import getpass
 import hashlib
 import hmac
 import json
+import os
 import platform
 import secrets
+
+from .io_utils import write_text_atomic
+
+try:
+    import keyring
+    from keyring.errors import KeyringError
+except ImportError:  # pragma: no cover - optional dependency
+    keyring = None
+
+    class KeyringError(Exception):
+        """Fallback keyring error placeholder."""
+
+        pass
 
 
 _FALLBACK_MAGIC = b"YFSC1"
@@ -21,6 +36,7 @@ _FALLBACK_SALT_LEN = 16
 _FALLBACK_NONCE_LEN = 16
 _FALLBACK_TAG_LEN = 32
 _FALLBACK_PBKDF2_ITER = 200_000
+_FALLBACK_SECRET_BYTES = 32
 
 
 @dataclass
@@ -56,7 +72,11 @@ class SecureConfigStore:
         }
         target = Path(self.path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        write_text_atomic(
+            target,
+            json.dumps(record, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
     def load(self) -> Dict[str, Any]:
         target = Path(self.path)
@@ -97,7 +117,7 @@ class SecureConfigStore:
     def _encrypt_fallback(self, plaintext: bytes) -> bytes:
         salt = secrets.token_bytes(_FALLBACK_SALT_LEN)
         nonce = secrets.token_bytes(_FALLBACK_NONCE_LEN)
-        enc_key, mac_key = self._fallback_keys(salt)
+        enc_key, mac_key = self._fallback_keys(salt, allow_create=True)
         keystream = self._keystream(enc_key, nonce, len(plaintext))
         ciphertext = bytes(a ^ b for a, b in zip(plaintext, keystream))
         tag = hmac.new(mac_key, nonce + ciphertext, hashlib.sha256).digest()
@@ -123,7 +143,7 @@ class SecureConfigStore:
         cursor += _FALLBACK_TAG_LEN
         ciphertext = payload[cursor:]
 
-        enc_key, mac_key = self._fallback_keys(salt)
+        enc_key, mac_key = self._fallback_keys(salt, allow_create=False)
         actual_tag = hmac.new(mac_key, nonce + ciphertext, hashlib.sha256).digest()
         if not hmac.compare_digest(expected_tag, actual_tag):
             raise ValueError("encrypted payload integrity check failed")
@@ -142,10 +162,8 @@ class SecureConfigStore:
         stream = b"".join(blocks)
         return stream[:size]
 
-    def _fallback_keys(self, salt: bytes) -> tuple[bytes, bytes]:
-        secret = (
-            f"{self.app_name}|{getpass.getuser()}|{platform.node()}|{Path.home()}"
-        ).encode("utf-8")
+    def _fallback_keys(self, salt: bytes, *, allow_create: bool) -> tuple[bytes, bytes]:
+        secret = self._fallback_secret(allow_create=allow_create)
         key_material = hashlib.pbkdf2_hmac(
             "sha256",
             secret,
@@ -154,6 +172,63 @@ class SecureConfigStore:
             dklen=64,
         )
         return key_material[:32], key_material[32:]
+
+    def _fallback_secret(self, *, allow_create: bool) -> bytes:
+        secret = self._fallback_secret_from_keyring(allow_create=allow_create)
+        if secret is not None:
+            return secret
+        secret = self._fallback_secret_from_file(allow_create=allow_create)
+        if secret is not None:
+            return secret
+        raise ValueError("fallback secret is unavailable")
+
+    def _fallback_secret_from_keyring(self, *, allow_create: bool) -> bytes | None:
+        if keyring is None:
+            return None
+        service_name = f"{self.app_name} SecureConfig"
+        account_name = f"{getpass.getuser()}@{platform.node()}"
+        try:
+            stored = keyring.get_password(service_name, account_name)
+            if stored:
+                return self._decode_secret(stored)
+            if not allow_create:
+                return None
+            secret = secrets.token_bytes(_FALLBACK_SECRET_BYTES)
+            encoded = base64.b64encode(secret).decode("ascii")
+            keyring.set_password(service_name, account_name, encoded)
+            return secret
+        except (KeyringError, ValueError, TypeError, binascii.Error):
+            return None
+
+    def _fallback_secret_from_file(self, *, allow_create: bool) -> bytes | None:
+        target = self._fallback_secret_path()
+        if target.exists():
+            return self._decode_secret(target.read_text(encoding="utf-8"))
+        if not allow_create:
+            return None
+
+        secret = secrets.token_bytes(_FALLBACK_SECRET_BYTES)
+        write_text_atomic(
+            target,
+            base64.b64encode(secret).decode("ascii") + "\n",
+            encoding="utf-8",
+        )
+        try:
+            os.chmod(target, 0o600)
+        except OSError:
+            pass
+        return secret
+
+    def _fallback_secret_path(self) -> Path:
+        target = Path(self.path)
+        return target.parent / f".{target.name}.key"
+
+    @staticmethod
+    def _decode_secret(value: str) -> bytes:
+        decoded = base64.b64decode(value.strip().encode("ascii"), validate=True)
+        if len(decoded) < _FALLBACK_SECRET_BYTES:
+            raise ValueError("fallback secret is too short")
+        return decoded
 
     def _encrypt_dpapi(self, plaintext: bytes) -> bytes:
         if not self._dpapi_available():
@@ -240,4 +315,3 @@ def _dpapi_crypt(data: bytes, entropy: bytes | None, protect: bool) -> bytes:
             kernel32.LocalFree(out_blob.pbData)
         _ = in_buf
         _ = entropy_buf
-

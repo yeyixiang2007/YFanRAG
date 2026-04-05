@@ -88,3 +88,31 @@ def test_sqlite_vec_store_delete_by_doc_ids(tmp_path):
 
     assert deleted == 1
     assert all(chunk.doc_id != "d1" for chunk in results)
+
+
+@pytest.mark.skipif(
+    not hasattr(sqlite3.connect(":memory:"), "enable_load_extension"),
+    reason="SQLite extension loading is not supported",
+)
+def test_sqlite_vec_store_delete_by_doc_ids_batches_large_input(tmp_path):
+    db_path = tmp_path / "vec_batch_delete.db"
+    store = SqliteVecStore(path=str(db_path), embedding_dim=4)
+    chunks = [
+        Chunk(
+            chunk_id=f"c{i}",
+            doc_id=f"d{i}",
+            text=f"doc {i}",
+            start=i,
+            end=i + 1,
+        )
+        for i in range(1100)
+    ]
+    embeddings = [[1.0, 0.0, 0.0, 0.0] for _ in chunks]
+    store.add(chunks, embeddings)
+
+    deleted = store.delete_by_doc_ids([chunk.doc_id for chunk in chunks])
+    results = store.query([1.0, 0.0, 0.0, 0.0], top_k=1)
+    store.close()
+
+    assert deleted == 1100
+    assert results == []

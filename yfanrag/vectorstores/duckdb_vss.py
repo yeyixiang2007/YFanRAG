@@ -9,6 +9,7 @@ from time import perf_counter
 from ..interfaces import FieldFilters, RangeFilters
 from ..models import Chunk
 from ..observability import log_slow_query
+from ..sql_utils import validate_identifier
 
 try:
     import duckdb
@@ -48,6 +49,7 @@ class DuckDbVssStore:
             raise RuntimeError(
                 "duckdb is not installed. Install with `pip install duckdb`."
             )
+        self.table = validate_identifier(self.table, label="vector table")
         self._conn = duckdb.connect(self.path)
         if self.persistent_index:
             self._conn.execute("SET hnsw_enable_experimental_persistence = true")
@@ -159,7 +161,7 @@ class DuckDbVssStore:
         cursor = self._conn.execute(sql, ids)
         try:
             return int(cursor.rowcount)
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             return 0
 
     def _ensure_schema(self, dim: int) -> None:
@@ -186,7 +188,7 @@ class DuckDbVssStore:
                 f"CREATE INDEX {index_name} ON {self.table} USING HNSW (embedding) "
                 f"WITH (metric='{metric}')"
             )
-        except Exception as exc:
+        except duckdb.Error as exc:
             msg = str(exc).lower()
             if "already exists" not in msg:
                 return
@@ -197,7 +199,7 @@ class DuckDbVssStore:
             self._conn.execute("INSTALL vss")
             self._conn.execute("LOAD vss")
             return True
-        except Exception:
+        except duckdb.Error:
             return False
 
     def _ensure_dim(self, dim: int) -> None:

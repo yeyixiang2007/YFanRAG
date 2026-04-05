@@ -9,6 +9,7 @@ import json
 import math
 import re
 import sqlite3
+import threading
 import urllib.error
 import urllib.request
 
@@ -49,7 +50,26 @@ _CODE_HINT_RE = re.compile(r"(?:`[^`]+`|::|->|=>|==|!=|<=|>=|[{}()\[\]<>])")
 _RERANK_BACKEND_CHOICES = {"auto", "cross-encoder", "api", "heuristic", "none"}
 _CROSS_ENCODER_CACHE: dict[str, object] = {}
 _CROSS_ENCODER_FAILED_MODELS: set[str] = set()
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?\.])\s+|\n+")
+_CROSS_ENCODER_LOADING_MODELS: set[str] = set()
+_CROSS_ENCODER_CACHE_LOCK = threading.Lock()
+_CROSS_ENCODER_CACHE_LIMIT = 2
+_CONTEXT_CODE_HINT_RE = re.compile(
+    r"(?:```|^\s{4,}|[{}();]|=>|::|\b(?:def|class|return|import|from|SELECT|INSERT|UPDATE|DELETE)\b)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_COMMON_ABBREVIATIONS = {
+    "mr",
+    "mrs",
+    "ms",
+    "dr",
+    "prof",
+    "sr",
+    "jr",
+    "vs",
+    "etc",
+    "e.g",
+    "i.e",
+}
 _EN_STOPWORDS = {
     "a",
     "an",
@@ -104,7 +124,7 @@ class KnowledgeBaseConfig:
     disable_vss_extension: bool = False
     vss_persistent_index: bool = False
     hybrid_alpha: float = 0.5
-    score_norm: str = "minmax"
+    score_norm: str = "sigmoid"
     vector_top_k: int | None = None
     fts_top_k: int | None = None
     multi_query_enabled: bool = True
@@ -528,8 +548,8 @@ class KnowledgeBaseManager:
         for idx, chunk in enumerate(chunks, start=1):
             distance = chunk.metadata.get("distance")
             if isinstance(distance, (int, float)):
-                score = -float(distance)
-                distance_value = float(distance)
+                distance_value = max(0.0, float(distance))
+                score = 1.0 / (1.0 + distance_value)
             else:
                 score = None
                 distance_value = None
@@ -880,12 +900,10 @@ class KnowledgeBaseManager:
         if model_name in _CROSS_ENCODER_FAILED_MODELS:
             return None
         try:
-            model = _CROSS_ENCODER_CACHE.get(model_name)
+            model = self._get_cached_cross_encoder(model_name)
             if model is None:
-                from sentence_transformers import CrossEncoder  # type: ignore
-
-                model = CrossEncoder(model_name)
-                _CROSS_ENCODER_CACHE[model_name] = model
+                self._start_cross_encoder_preload(model_name)
+                return None
             pairs = [(query_text, hit.text) for hit in hits]
             raw_scores = model.predict(pairs)
             if hasattr(raw_scores, "tolist"):
@@ -900,9 +918,51 @@ class KnowledgeBaseManager:
                 except (TypeError, ValueError):
                     continue
             return scores or None
-        except Exception:
+        except (ImportError, OSError, RuntimeError, ValueError):
             _CROSS_ENCODER_FAILED_MODELS.add(model_name)
             return None
+
+    @staticmethod
+    def _get_cached_cross_encoder(model_name: str) -> object | None:
+        with _CROSS_ENCODER_CACHE_LOCK:
+            model = _CROSS_ENCODER_CACHE.get(model_name)
+            if model is None:
+                return None
+            _CROSS_ENCODER_CACHE.pop(model_name, None)
+            _CROSS_ENCODER_CACHE[model_name] = model
+            return model
+
+    def _start_cross_encoder_preload(self, model_name: str) -> None:
+        with _CROSS_ENCODER_CACHE_LOCK:
+            if model_name in _CROSS_ENCODER_LOADING_MODELS:
+                return
+            if model_name in _CROSS_ENCODER_CACHE:
+                return
+            _CROSS_ENCODER_LOADING_MODELS.add(model_name)
+        thread = threading.Thread(
+            target=self._preload_cross_encoder_model,
+            args=(model_name,),
+            daemon=True,
+        )
+        thread.start()
+
+    def _preload_cross_encoder_model(self, model_name: str) -> None:
+        try:
+            from sentence_transformers import CrossEncoder  # type: ignore
+
+            model = CrossEncoder(model_name)
+            with _CROSS_ENCODER_CACHE_LOCK:
+                _CROSS_ENCODER_CACHE[model_name] = model
+                while len(_CROSS_ENCODER_CACHE) > _CROSS_ENCODER_CACHE_LIMIT:
+                    oldest = next(iter(_CROSS_ENCODER_CACHE))
+                    if oldest == model_name and len(_CROSS_ENCODER_CACHE) == 1:
+                        break
+                    _CROSS_ENCODER_CACHE.pop(oldest, None)
+        except (ImportError, OSError, RuntimeError, ValueError):
+            _CROSS_ENCODER_FAILED_MODELS.add(model_name)
+        finally:
+            with _CROSS_ENCODER_CACHE_LOCK:
+                _CROSS_ENCODER_LOADING_MODELS.discard(model_name)
 
     def _try_api_rerank_scores(
         self,
@@ -1101,9 +1161,7 @@ class KnowledgeBaseManager:
         if len(compact) <= max_chars and max_sentences >= 2:
             return compact
 
-        raw_parts = _SENTENCE_SPLIT_RE.split(text)
-        parts = [" ".join(part.split()).strip() for part in raw_parts]
-        sentences = [part for part in parts if part]
+        sentences = self._split_context_sentences(text)
         if not sentences:
             return self._clip_text(compact, max_chars)
 
@@ -1140,6 +1198,71 @@ class KnowledgeBaseManager:
         if not assembled:
             assembled = compact
         return self._clip_text(assembled, max_chars)
+
+    def _split_context_sentences(self, text: str) -> list[str]:
+        normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+        if not normalized.strip():
+            return []
+
+        blocks = [block.strip() for block in re.split(r"\n{2,}", normalized) if block.strip()]
+        sentences: list[str] = []
+        for block in blocks:
+            if self._looks_code_like(block):
+                compact = " ".join(block.split()).strip()
+                if compact:
+                    sentences.append(compact)
+                continue
+
+            current: list[str] = []
+            for idx, ch in enumerate(block):
+                if ch == "\n":
+                    if current and current[-1] != " ":
+                        current.append(" ")
+                    continue
+                current.append(ch)
+                if ch in "。！？!?":
+                    self._flush_context_sentence(current, sentences)
+                    continue
+                if ch == "." and self._should_split_context_period(block, idx):
+                    self._flush_context_sentence(current, sentences)
+            self._flush_context_sentence(current, sentences)
+        return sentences
+
+    @staticmethod
+    def _flush_context_sentence(buffer: list[str], sentences: list[str]) -> None:
+        if not buffer:
+            return
+        sentence = " ".join("".join(buffer).split()).strip()
+        buffer.clear()
+        if sentence:
+            sentences.append(sentence)
+
+    @staticmethod
+    def _looks_code_like(text: str) -> bool:
+        return bool(_CONTEXT_CODE_HINT_RE.search(text or ""))
+
+    @staticmethod
+    def _should_split_context_period(text: str, idx: int) -> bool:
+        prev_char = text[idx - 1] if idx > 0 else ""
+        next_idx = idx + 1
+        while next_idx < len(text) and text[next_idx].isspace():
+            next_idx += 1
+        next_char = text[next_idx] if next_idx < len(text) else ""
+
+        if prev_char.isdigit() and next_char.isdigit():
+            return False
+
+        prev_word_chars: list[str] = []
+        cursor = idx - 1
+        while cursor >= 0 and text[cursor].isalpha():
+            prev_word_chars.append(text[cursor].lower())
+            cursor -= 1
+        prev_word = "".join(reversed(prev_word_chars))
+        if prev_word in _COMMON_ABBREVIATIONS:
+            return False
+        if next_char and next_char.islower():
+            return False
+        return True
 
     def _is_semantic_duplicate(
         self,
@@ -1624,7 +1747,7 @@ class KnowledgeBaseManager:
                 row = conn.execute(
                     f"SELECT COUNT(*) AS chunk_count, COUNT(DISTINCT doc_id) AS doc_count FROM {table}"
                 ).fetchone()
-            except Exception:
+            except duckdb.Error:
                 return (0, 0)
             if row is None:
                 return (0, 0)
@@ -1647,7 +1770,7 @@ class KnowledgeBaseManager:
                     "ORDER BY doc_id LIMIT ?",
                     [limit],
                 ).fetchall()
-            except Exception:
+            except duckdb.Error:
                 return []
             return [str(row[0]) for row in rows if row and row[0]]
         finally:

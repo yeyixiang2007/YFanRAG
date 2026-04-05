@@ -102,3 +102,38 @@ def test_hybrid_retriever_requires_valid_alpha():
             fts_index=DummyFtsIndex([]),
             alpha=1.2,
         )
+
+
+def test_hybrid_retriever_supports_sigmoid_normalization():
+    store = InMemoryVectorStore()
+    chunks = [
+        Chunk(chunk_id="c1", doc_id="d1", text="vector only", start=0, end=11),
+        Chunk(chunk_id="c2", doc_id="d1", text="shared", start=12, end=18),
+        Chunk(chunk_id="c3", doc_id="d1", text="fts only boost", start=19, end=33),
+    ]
+    store.add(
+        chunks,
+        [
+            [1.0, 0.0],
+            [0.6, 0.8],
+            [0.0, 1.0],
+        ],
+    )
+    retriever = HybridRetriever(
+        embedder=DummyEmbedder([1.0, 0.0]),
+        vector_store=store,
+        fts_index=DummyFtsIndex(
+            [
+                FtsMatch(chunk_id="c2", doc_id="d1", text="shared", score=-2.0),
+                FtsMatch(chunk_id="c3", doc_id="d1", text="fts only boost", score=-1.0),
+            ]
+        ),
+        alpha=0.5,
+        score_norm="sigmoid",
+    )
+
+    hits = retriever.retrieve_with_scores("hello", top_k=3)
+
+    assert [hit.chunk.chunk_id for hit in hits] == ["c2", "c1", "c3"]
+    assert all(0.0 <= hit.vector_score <= 1.0 for hit in hits)
+    assert all(0.0 <= hit.fts_score <= 1.0 for hit in hits)

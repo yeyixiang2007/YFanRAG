@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+import yfanrag.secure_config as secure_config_module
 from yfanrag.secure_config import SecureConfigStore
 
 
@@ -51,3 +52,16 @@ def test_secure_config_missing_file_returns_empty(tmp_path: Path) -> None:
     store = SecureConfigStore(path=str(path), backend="fallback")
     assert store.load() == {}
 
+
+def test_secure_config_fallback_uses_local_secret_when_keyring_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(secure_config_module, "keyring", None)
+    path = tmp_path / "api.enc.json"
+    store = SecureConfigStore(path=str(path), backend="fallback")
+
+    store.save({"api_key": "sk-test"})
+
+    assert (tmp_path / ".api.enc.json.key").exists()
+    assert store.load() == {"api_key": "sk-test"}

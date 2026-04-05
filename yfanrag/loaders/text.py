@@ -48,12 +48,17 @@ class TextFileLoader(BaseLoader):
     encoding: str = "utf-8"
     allow_extensions: Sequence[str] = DEFAULT_TEXT_EXTENSIONS
     path_whitelist: Sequence[str] | None = None
+    max_file_size_bytes: int = 10 * 1024 * 1024
+    fallback_encodings: Sequence[str] = ("utf-8-sig", "gb18030", "utf-16", "utf-16-le", "utf-16-be")
+    decode_errors: str = "replace"
 
     def load(self) -> List[Document]:
         documents: List[Document] = []
         for path in self._iter_paths():
-            text = path.read_text(encoding=self.encoding)
             stat = path.stat()
+            if stat.st_size > self.max_file_size_bytes:
+                continue
+            text, encoding_used = self._read_text(path)
             documents.append(
                 Document(
                     doc_id=f"file:{path.as_posix()}",
@@ -62,6 +67,7 @@ class TextFileLoader(BaseLoader):
                         "path": path.as_posix(),
                         "size": stat.st_size,
                         "mtime": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                        "encoding": encoding_used,
                     },
                     source=path.as_posix(),
                     title=path.stem,
@@ -87,3 +93,16 @@ class TextFileLoader(BaseLoader):
         for path in root.rglob("*"):
             if path.is_file() and path.suffix.lower() in allow:
                 yield path
+
+    def _read_text(self, path: Path) -> tuple[str, str]:
+        tried: list[str] = []
+        for encoding in [self.encoding, *self.fallback_encodings]:
+            candidate = (encoding or "").strip()
+            if not candidate or candidate in tried:
+                continue
+            tried.append(candidate)
+            try:
+                return path.read_text(encoding=candidate, errors="strict"), candidate
+            except UnicodeDecodeError:
+                continue
+        return path.read_text(encoding=self.encoding, errors=self.decode_errors), self.encoding

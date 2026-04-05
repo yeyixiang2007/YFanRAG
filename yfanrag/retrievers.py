@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isfinite
+from math import exp, isfinite, sqrt
 from typing import Dict, List, Sequence
 
 from .fts import FtsMatch, SqliteFtsIndex
@@ -25,7 +25,7 @@ class HybridRetriever(Retriever):
     vector_store: VectorStore
     fts_index: SqliteFtsIndex
     alpha: float = 0.5
-    score_norm: str = "minmax"
+    score_norm: str = "sigmoid"
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.alpha <= 1.0:
@@ -161,6 +161,18 @@ class HybridRetriever(Retriever):
             return {}
         if self.score_norm == "none":
             return dict(raw_scores)
+        if self.score_norm == "sigmoid":
+            values = list(raw_scores.values())
+            mean = sum(values) / float(len(values))
+            variance = sum((value - mean) ** 2 for value in values) / float(len(values))
+            stddev = sqrt(variance) if variance > 0.0 else 0.0
+            scale = stddev if stddev > 1e-9 else 1.0
+            normalized: Dict[str, float] = {}
+            for chunk_id, score in raw_scores.items():
+                z_score = (score - mean) / scale
+                bounded = max(-60.0, min(60.0, z_score))
+                normalized[chunk_id] = 1.0 / (1.0 + exp(-bounded))
+            return normalized
         if self.score_norm != "minmax":
             raise ValueError(f"unsupported score normalization: {self.score_norm}")
 
@@ -180,8 +192,8 @@ class HybridRetriever(Retriever):
         for idx, chunk in enumerate(chunks):
             distance = chunk.metadata.get("distance")
             if isinstance(distance, (int, float)) and isfinite(float(distance)):
-                # vec0 distance is lower-is-better, convert to higher-is-better.
-                score = -float(distance)
+                numeric = max(0.0, float(distance))
+                score = 1.0 / (1.0 + numeric)
             else:
                 score = 1.0 / (idx + 1)
             scores[chunk.chunk_id] = score

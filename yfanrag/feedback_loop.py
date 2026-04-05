@@ -9,6 +9,7 @@ from typing import Callable, Sequence
 import json
 
 from .benchmark import RetrievalItem, evaluate_retrieval_benchmark, load_benchmark_cases
+from .io_utils import append_text_atomic
 
 _UNKNOWN_REF_VALUES = {"", "unknown", "n/a", "na", "-", "none", "null"}
 _LABEL_ALIASES = {
@@ -219,5 +220,4 @@ class FeedbackLoopStore:
     def _append_jsonl(path: Path, row: dict[str, object]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(row, ensure_ascii=False, separators=(",", ":"))
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(payload + "\n")
+        append_text_atomic(path, payload + "\n", encoding="utf-8")
