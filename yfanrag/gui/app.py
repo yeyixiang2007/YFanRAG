@@ -69,7 +69,7 @@ class TkChatApp(
         self.kb_db_var = tk.StringVar(value="yfanrag_kb.db")
         self.kb_store_var = tk.StringVar(value="sqlite-vec1")
         self.kb_enable_fts_var = tk.BooleanVar(value=True)
-        self.kb_chunker_var = tk.StringVar(value="recursive")
+        self.kb_chunker_var = tk.StringVar(value="structured")
         self.kb_chunk_size_var = tk.StringVar(value="800")
         self.kb_chunk_overlap_var = tk.StringVar(value="120")
         self.kb_dims_var = tk.StringVar(value="8")

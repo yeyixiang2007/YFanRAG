@@ -12,7 +12,7 @@ import sqlite3
 import urllib.error
 import urllib.request
 
-from .chunking import FixedChunker, RecursiveChunker
+from .chunking import FixedChunker, RecursiveChunker, StructureAwareChunker
 from .embedders import HashingEmbedder
 from .fts import SqliteFtsIndex
 from .loaders.text import TextFileLoader
@@ -93,7 +93,7 @@ class KnowledgeBaseConfig:
     table: str | None = None
     fts_table: str = "fts_chunks"
     dims: int = 8
-    chunker: str = "recursive"
+    chunker: str = "structured"
     chunk_size: int = 800
     chunk_overlap: int = 120
     enable_fts: bool = True
@@ -1538,7 +1538,12 @@ class KnowledgeBaseManager:
         return normalized
 
     @staticmethod
-    def _build_chunker(config: KnowledgeBaseConfig) -> FixedChunker | RecursiveChunker:
+    def _build_chunker(config: KnowledgeBaseConfig) -> FixedChunker | RecursiveChunker | StructureAwareChunker:
+        if config.chunker == "structured":
+            return StructureAwareChunker(
+                chunk_size=config.chunk_size,
+                chunk_overlap=config.chunk_overlap,
+            )
         if config.chunker == "recursive":
             return RecursiveChunker(
                 chunk_size=config.chunk_size,

@@ -13,7 +13,7 @@ from .benchmark import (
     evaluate_retrieval_benchmark,
     load_benchmark_cases,
 )
-from .chunking import FixedChunker, RecursiveChunker
+from .chunking import FixedChunker, RecursiveChunker, StructureAwareChunker
 from .config import (
     ChunkingConfig,
     EmbeddingConfig,
@@ -76,6 +76,7 @@ __all__ = [
     "TextFileLoader",
     "FixedChunker",
     "RecursiveChunker",
+    "StructureAwareChunker",
     "HashingEmbedder",
     "HttpEmbedder",
     "EmbedderFactory",

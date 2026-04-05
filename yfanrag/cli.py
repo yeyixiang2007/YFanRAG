@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 from .benchmark import RetrievalItem, evaluate_retrieval_benchmark, load_benchmark_cases
-from .chunking import FixedChunker, RecursiveChunker
+from .chunking import FixedChunker, RecursiveChunker, StructureAwareChunker
 from .embedders import HashingEmbedder, HttpEmbedder
 from .fts import SqliteFtsIndex
 from .loaders.text import TextFileLoader
@@ -30,6 +30,11 @@ _STORE_CHOICES = ["sqlite-vec", "sqlite-vec1", "duckdb-vss", "memory"]
 
 
 def _build_chunker(args: argparse.Namespace):
+    if args.chunker == "structured":
+        return StructureAwareChunker(
+            chunk_size=args.chunk_size,
+            chunk_overlap=args.chunk_overlap,
+        )
     if args.chunker == "recursive":
         return RecursiveChunker(
             chunk_size=args.chunk_size,
@@ -454,7 +459,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ingest.add_argument("--db", default="yfanrag.db")
     ingest.add_argument("--store", choices=_STORE_CHOICES, default="sqlite-vec")
-    ingest.add_argument("--chunker", choices=["fixed", "recursive"], default="fixed")
+    ingest.add_argument("--chunker", choices=["fixed", "recursive", "structured"], default="structured")
     ingest.add_argument("--chunk-size", type=int, default=800)
     ingest.add_argument("--chunk-overlap", type=int, default=120)
     ingest.add_argument("--embedder", choices=["hashing", "http"], default="hashing")

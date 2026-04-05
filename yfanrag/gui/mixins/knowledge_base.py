@@ -119,7 +119,7 @@ class AppKnowledgeBaseMixin:
         ttk.Combobox(
             config_card,
             textvariable=self.kb_chunker_var,
-            values=["fixed", "recursive"],
+            values=["structured", "fixed", "recursive"],
             state="readonly",
             width=12,
         ).grid(row=3, column=1, sticky="w", padx=6, pady=4)
@@ -434,8 +434,8 @@ class AppKnowledgeBaseMixin:
         dims = int(self.kb_dims_var.get().strip() or "8")
         chunk_size = int(self.kb_chunk_size_var.get().strip() or "800")
         chunk_overlap = int(self.kb_chunk_overlap_var.get().strip() or "120")
-        chunker = self.kb_chunker_var.get().strip() or "recursive"
-        if chunker not in {"fixed", "recursive"}:
+        chunker = self.kb_chunker_var.get().strip() or "structured"
+        if chunker not in {"fixed", "recursive", "structured"}:
             raise ValueError(f"unsupported chunker: {chunker}")
 
         return KnowledgeBaseConfig(

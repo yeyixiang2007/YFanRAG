@@ -93,7 +93,7 @@ class AppConfigMixin:
                 self.kb_store_var.set(store)
 
             chunker = kb_payload.get("chunker")
-            if isinstance(chunker, str) and chunker in {"fixed", "recursive"}:
+            if isinstance(chunker, str) and chunker in {"fixed", "recursive", "structured"}:
                 self.kb_chunker_var.set(chunker)
 
             query_mode = kb_payload.get("query_mode")

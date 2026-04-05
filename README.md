@@ -7,6 +7,7 @@
 
 - 多后端向量存储：`sqlite-vec`、`sqlite-vec1`、`duckdb-vss`、`memory`
 - 检索模式：`auto` 自适应路由、向量检索、FTS 检索、混合检索（向量 + FTS）
+- 分块策略：`structured`（代码/文档感知）/ `recursive` / `fixed`
 - 数据维护：增量更新、按 `doc_id` 删除、跨后端迁移
 - 查询增强：字段过滤、范围过滤、Multi-Query 扩展、RRF 融合、二阶段重排（Reranker）、上下文压缩与去重、批处理与 embedding 缓存
 - 工程能力：Benchmark 报告、统一日志、慢查询提示、安全白名单
@@ -16,7 +17,7 @@
 ```mermaid
 flowchart LR
   subgraph Ingest["Ingest Pipeline"]
-    L["TextFileLoader<br/>md/txt"] --> C["Chunker<br/>fixed/recursive"]
+    L["TextFileLoader<br/>md/txt"] --> C["Chunker<br/>structured/fixed/recursive"]
     C --> E["Embedder<br/>hashing/http"]
     E --> V["VectorStore<br/>sqlite-vec / sqlite-vec1 / duckdb-vss / memory"]
     C --> F["FTS Index<br/>SQLite FTS5"]
@@ -71,6 +72,8 @@ pip install -e .[rerank]   # cross-encoder reranker (sentence-transformers)
 ```powershell
 yfanrag ingest docs/ --db yfanrag.db --store sqlite-vec --enable-fts
 ```
+
+默认使用 `--chunker structured`（对 `.py/.js/.md` 自动结构化分块）。
 
 可选后端：
 
@@ -252,11 +255,19 @@ python examples/04_tk_chat_app.py
 
 点击顶栏 `Knowledge Base` 打开管理窗口，按下面流程操作：
 
-1. 选择 `Database` 文件、`Store`（推荐 `sqlite-vec1`）、`Chunker`、`Chunk Size/Overlap`、`Embedding Dims`。
+1. 选择 `Database` 文件、`Store`（推荐 `sqlite-vec1`）、`Chunker`（默认 `structured`）、`Chunk Size/Overlap`、`Embedding Dims`。
 2. 点击 `Add Files` 或 `Add Folder` 选择文本/代码文件（如 `.md/.txt/.py/.gd/.js` 等），然后点 `Ingest / Upsert` 入库。
 3. 用 `Refresh Stats` 查看当前 `docs/chunks` 统计，用 `List Doc IDs` 查看可删除文档 ID。
 4. 在 `KB Query` 输入检索词并 `Run Query` 预览召回结果（支持 `auto / vector / hybrid / fts`；查询会先扩展为 3-5 个子查询并做 RRF，再进入二阶段重排）。
 5. 在 `Delete Doc ID(s)` 输入一个或多个 `doc_id`（空格/逗号分隔）并点击 `Delete`。
+
+### 代码/文档感知分块（`structured`）
+
+- 对 `.md`：按标题层级（`#` 到 `######`）切分，保留标题级别与标题文本信息。
+- 对 `.py`：按 `class / def / async def` 切分，优先保持函数/类语义边界。
+- 对 `.js/.jsx/.ts/.tsx/.mjs/.cjs`：按 `class / function / arrow function` 切分。
+- 结构段仍受 `Chunk Size / Overlap` 控制，超长段会自动二次递归切块。
+- 非上述类型文件会自动回退到 `recursive` 分块。
 
 ### 自适应检索路由（`auto`）
 
