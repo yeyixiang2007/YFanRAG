@@ -108,7 +108,11 @@ class KnowledgeBaseManager:
         )
         documents = loader.load()
         if not documents:
-            raise ValueError("no supported .txt/.md documents found in selected paths")
+            allowed = ", ".join(sorted({ext.lower() for ext in loader.allow_extensions}))
+            raise ValueError(
+                "no supported text/code documents found in selected paths; "
+                f"allowed extensions: {allowed}"
+            )
 
         chunker = self._build_chunker(config)
         embedder = HashingEmbedder(dims=config.dims)
@@ -503,4 +507,3 @@ class KnowledgeBaseManager:
             return [str(row[0]) for row in rows if row and row[0]]
         finally:
             conn.close()
-

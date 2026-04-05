@@ -231,7 +231,7 @@ python examples/04_tk_chat_app.py
 
 - 顶栏：`Knowledge Base` 按钮、`Stream` 开关、状态指示（Ready/Request in flight/Stopped）。
 - 左侧配置栏：`provider / endpoint / model / api_key / header / system prompt / extra headers / extra body`。
-- 右侧会话区：对话记录、消息输入框、`Send`、`Stop`。
+- 右侧会话区：对话记录（支持 Markdown 渲染：标题、列表、粗体/斜体、代码块等）、消息输入框、`Send`、`Stop`。
 
 ### 快速上手（对话）
 
@@ -252,7 +252,7 @@ python examples/04_tk_chat_app.py
 点击顶栏 `Knowledge Base` 打开管理窗口，按下面流程操作：
 
 1. 选择 `Database` 文件、`Store`（推荐 `sqlite-vec1`）、`Chunker`、`Chunk Size/Overlap`、`Embedding Dims`。
-2. 点击 `Add Files` 或 `Add Folder` 选择 `.md/.txt`，然后点 `Ingest / Upsert` 入库。
+2. 点击 `Add Files` 或 `Add Folder` 选择文本/代码文件（如 `.md/.txt/.py/.gd/.js` 等），然后点 `Ingest / Upsert` 入库。
 3. 用 `Refresh Stats` 查看当前 `docs/chunks` 统计，用 `List Doc IDs` 查看可删除文档 ID。
 4. 在 `KB Query` 输入检索词并 `Run Query` 预览召回结果（`vector / hybrid / fts` 可切换）。
 5. 在 `Delete Doc ID(s)` 输入一个或多个 `doc_id`（空格/逗号分隔）并点击 `Delete`。
@@ -281,7 +281,7 @@ flowchart LR
 
 - 下拉框文字看不清：请更新到最新代码并重启 `yfanrag chat-ui`（已修复白底白字问题）。
 - 非全屏看不到输入框：已修复布局，若仍异常请将窗口高度调大后重启。
-- 检索无结果：先在知识库窗口执行 `Refresh Stats`，确认 `docs/chunks` 大于 0，再检查查询词。
+- 检索无结果：先在知识库窗口执行 `Refresh Stats`，确认 `docs/chunks` 大于 0；再确认已勾选 `Use KB Context In Chat`，并检查问题关键词是否出现在已入库文件中。
 
 ## 开发与发布
 

@@ -26,6 +26,7 @@ from .knowledge_base import (
     KnowledgeBaseHit,
     KnowledgeBaseManager,
 )
+from .loaders.text import DEFAULT_TEXT_EXTENSIONS
 from .secure_config import SecureConfigStore
 
 
@@ -34,6 +35,18 @@ class WorkerEvent:
     kind: str  # delta | done | error
     text: str = ""
     stopped: bool = False
+
+
+MARKDOWN_FENCE_RE = re.compile(r"^\s*```([\w.+-]+)?\s*$")
+MARKDOWN_HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)$")
+MARKDOWN_QUOTE_RE = re.compile(r"^\s{0,3}>\s?(.*)$")
+MARKDOWN_UNORDERED_LIST_RE = re.compile(r"^(\s*)[-*+]\s+(.*)$")
+MARKDOWN_ORDERED_LIST_RE = re.compile(r"^(\s*)(\d+)[\.)]\s+(.*)$")
+MARKDOWN_HR_RE = re.compile(r"^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$")
+MARKDOWN_INLINE_TOKEN_RE = re.compile(
+    r"(`[^`\n]+`|\[[^\]\n]+\]\([^)]+\)|\*\*\*.+?\*\*\*|___.+?___|\*\*.+?\*\*|__.+?__|~~.+?~~|\*[^*\n]+\*|_[^_\n]+_)"
+)
+MARKDOWN_LINK_RE = re.compile(r"^\[([^\]\n]+)\]\(([^)\n]+)\)$")
 
 
 class TkChatApp:
@@ -440,6 +453,49 @@ class TkChatApp:
         self.chat_text.tag_configure("system", foreground="#C4B5FD")
         self.chat_text.tag_configure("error", foreground="#FCA5A5")
         self.chat_text.tag_configure("title", foreground="#F9FAFB", font=("Consolas", 12, "bold"))
+        self.chat_text.tag_configure("md_h1", font=("Segoe UI", 16, "bold"), spacing1=8, spacing3=3)
+        self.chat_text.tag_configure("md_h2", font=("Segoe UI", 14, "bold"), spacing1=7, spacing3=3)
+        self.chat_text.tag_configure("md_h3", font=("Segoe UI", 13, "bold"), spacing1=6, spacing3=2)
+        self.chat_text.tag_configure("md_h4", font=("Segoe UI", 12, "bold"), spacing1=5, spacing3=2)
+        self.chat_text.tag_configure("md_bold", font=("Consolas", 12, "bold"))
+        self.chat_text.tag_configure("md_italic", font=("Consolas", 12, "italic"))
+        self.chat_text.tag_configure("md_bold_italic", font=("Consolas", 12, "bold italic"))
+        self.chat_text.tag_configure("md_strike", overstrike=1)
+        self.chat_text.tag_configure(
+            "md_code_inline",
+            font=("Consolas", 11),
+            foreground="#FDE68A",
+            background="#1F2937",
+        )
+        self.chat_text.tag_configure(
+            "md_code_block",
+            font=("Consolas", 11),
+            foreground="#E5E7EB",
+            background="#111827",
+            lmargin1=14,
+            lmargin2=14,
+            spacing1=2,
+            spacing3=2,
+        )
+        self.chat_text.tag_configure(
+            "md_code_meta",
+            font=("Consolas", 10, "italic"),
+            foreground="#9CA3AF",
+            lmargin1=14,
+            lmargin2=14,
+        )
+        self.chat_text.tag_configure(
+            "md_quote",
+            foreground="#CBD5E1",
+            lmargin1=16,
+            lmargin2=16,
+        )
+        self.chat_text.tag_configure("md_quote_marker", foreground="#64748B")
+        self.chat_text.tag_configure("md_list", lmargin1=12, lmargin2=24)
+        self.chat_text.tag_configure("md_list_marker", foreground="#D1D5DB")
+        self.chat_text.tag_configure("md_link", foreground="#60A5FA", underline=1)
+        self.chat_text.tag_configure("md_link_url", foreground="#93C5FD", font=("Consolas", 10))
+        self.chat_text.tag_configure("md_hr", foreground="#334155")
 
         composer = ttk.Frame(outer, style="Card.TFrame")
         composer.grid(row=2, column=0, sticky="ew", pady=(8, 0))
@@ -511,6 +567,19 @@ class TkChatApp:
             "system_prompt": self.system_text.get("1.0", END),
             "extra_headers_json": self.extra_headers_text.get("1.0", END),
             "extra_body_json": self.extra_body_text.get("1.0", END),
+            "kb": {
+                "db_path": self.kb_db_var.get(),
+                "store": self.kb_store_var.get(),
+                "enable_fts": bool(self.kb_enable_fts_var.get()),
+                "chunker": self.kb_chunker_var.get(),
+                "chunk_size": self.kb_chunk_size_var.get(),
+                "chunk_overlap": self.kb_chunk_overlap_var.get(),
+                "dims": self.kb_dims_var.get(),
+                "query_mode": self.kb_query_mode_var.get(),
+                "query_top_k": self.kb_top_k_var.get(),
+                "use_context_in_chat": bool(self.kb_use_context_var.get()),
+                "context_top_k": self.kb_context_top_k_var.get(),
+            },
         }
 
     def _apply_api_config_payload(self, payload: dict[str, object]) -> None:
@@ -555,6 +624,45 @@ class TkChatApp:
         if isinstance(extra_body_json, str):
             self.extra_body_text.delete("1.0", END)
             self.extra_body_text.insert("1.0", extra_body_json)
+
+        kb_payload = payload.get("kb")
+        if isinstance(kb_payload, dict):
+            db_path = kb_payload.get("db_path")
+            if isinstance(db_path, str) and db_path.strip():
+                self.kb_db_var.set(db_path)
+
+            store = kb_payload.get("store")
+            if isinstance(store, str) and store in STORE_CHOICES:
+                self.kb_store_var.set(store)
+
+            chunker = kb_payload.get("chunker")
+            if isinstance(chunker, str) and chunker in {"fixed", "recursive"}:
+                self.kb_chunker_var.set(chunker)
+
+            query_mode = kb_payload.get("query_mode")
+            if isinstance(query_mode, str) and query_mode in QUERY_MODE_CHOICES:
+                self.kb_query_mode_var.set(query_mode)
+
+            for field, var in (
+                ("chunk_size", self.kb_chunk_size_var),
+                ("chunk_overlap", self.kb_chunk_overlap_var),
+                ("dims", self.kb_dims_var),
+                ("query_top_k", self.kb_top_k_var),
+                ("context_top_k", self.kb_context_top_k_var),
+            ):
+                value = kb_payload.get(field)
+                if isinstance(value, int):
+                    var.set(str(value))
+                elif isinstance(value, str) and value.strip():
+                    var.set(value)
+
+            enable_fts = kb_payload.get("enable_fts")
+            if isinstance(enable_fts, bool):
+                self.kb_enable_fts_var.set(enable_fts)
+
+            use_context = kb_payload.get("use_context_in_chat")
+            if isinstance(use_context, bool):
+                self.kb_use_context_var.set(use_context)
         self._refresh_provider_meta()
 
     def _save_api_config(self, verbose: bool) -> None:
@@ -950,10 +1058,13 @@ class TkChatApp:
             self._kb_refresh_stats()
 
     def _add_kb_files(self) -> None:
+        allowed_patterns = " ".join(
+            f"*{suffix}" for suffix in sorted({ext.lower() for ext in DEFAULT_TEXT_EXTENSIONS})
+        )
         selected = filedialog.askopenfilenames(
             title="Select documents",
             filetypes=[
-                ("Text and Markdown", "*.txt *.md"),
+                ("Text / Markdown / Code", allowed_patterns),
                 ("All files", "*.*"),
             ],
         )
@@ -1471,6 +1582,144 @@ class TkChatApp:
         self.transcript.append({"role": role, "text": text})
         self._render_chat()
 
+    def _chat_insert(self, text: str, *tags: str) -> None:
+        active_tags = tuple(tag for tag in tags if tag)
+        if active_tags:
+            self.chat_text.insert(END, text, active_tags)
+        else:
+            self.chat_text.insert(END, text)
+
+    def _render_markdown(self, role_tag: str, text: str) -> None:
+        normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+        lines = normalized.split("\n")
+        in_code_block = False
+
+        for line in lines:
+            fence_match = MARKDOWN_FENCE_RE.match(line)
+            if fence_match:
+                if in_code_block:
+                    in_code_block = False
+                else:
+                    in_code_block = True
+                    language = (fence_match.group(1) or "").strip()
+                    if language:
+                        self._chat_insert(f"[{language}]\n", role_tag, "md_code_meta")
+                continue
+
+            if in_code_block:
+                self._chat_insert(f"{line}\n", role_tag, "md_code_block")
+                continue
+
+            if not line.strip():
+                self._chat_insert("\n", role_tag)
+                continue
+
+            heading_match = MARKDOWN_HEADING_RE.match(line)
+            if heading_match:
+                level = min(len(heading_match.group(1)), 4)
+                heading_text = heading_match.group(2).strip() or " "
+                self._chat_insert(f"{heading_text}\n", role_tag, f"md_h{level}")
+                continue
+
+            if MARKDOWN_HR_RE.match(line):
+                self._chat_insert("----------------------------------------\n", role_tag, "md_hr")
+                continue
+
+            quote_match = MARKDOWN_QUOTE_RE.match(line)
+            if quote_match:
+                self._chat_insert("| ", role_tag, "md_quote_marker")
+                self._render_markdown_inline(
+                    role_tag,
+                    quote_match.group(1),
+                    extra_tags=("md_quote",),
+                )
+                self._chat_insert("\n", role_tag, "md_quote")
+                continue
+
+            unordered_match = MARKDOWN_UNORDERED_LIST_RE.match(line)
+            if unordered_match:
+                indent = unordered_match.group(1).replace("\t", "    ")
+                self._chat_insert(f"{indent}- ", role_tag, "md_list_marker")
+                self._render_markdown_inline(
+                    role_tag,
+                    unordered_match.group(2),
+                    extra_tags=("md_list",),
+                )
+                self._chat_insert("\n", role_tag, "md_list")
+                continue
+
+            ordered_match = MARKDOWN_ORDERED_LIST_RE.match(line)
+            if ordered_match:
+                indent = ordered_match.group(1).replace("\t", "    ")
+                index = ordered_match.group(2)
+                self._chat_insert(f"{indent}{index}. ", role_tag, "md_list_marker")
+                self._render_markdown_inline(
+                    role_tag,
+                    ordered_match.group(3),
+                    extra_tags=("md_list",),
+                )
+                self._chat_insert("\n", role_tag, "md_list")
+                continue
+
+            self._render_markdown_inline(role_tag, line)
+            self._chat_insert("\n", role_tag)
+
+    def _render_markdown_inline(
+        self,
+        role_tag: str,
+        text: str,
+        extra_tags: tuple[str, ...] = (),
+    ) -> None:
+        cursor = 0
+        for match in MARKDOWN_INLINE_TOKEN_RE.finditer(text):
+            start, end = match.span()
+            if start > cursor:
+                self._chat_insert(text[cursor:start], role_tag, *extra_tags)
+            self._render_markdown_token(role_tag, match.group(0), extra_tags)
+            cursor = end
+        if cursor < len(text):
+            self._chat_insert(text[cursor:], role_tag, *extra_tags)
+
+    def _render_markdown_token(
+        self,
+        role_tag: str,
+        token: str,
+        extra_tags: tuple[str, ...],
+    ) -> None:
+        base_tags = (role_tag, *extra_tags)
+
+        if token.startswith("`") and token.endswith("`"):
+            self._chat_insert(token[1:-1], *base_tags, "md_code_inline")
+            return
+        if token.startswith("~~") and token.endswith("~~"):
+            self._chat_insert(token[2:-2], *base_tags, "md_strike")
+            return
+
+        link_match = MARKDOWN_LINK_RE.match(token)
+        if link_match is not None:
+            label, url = link_match.groups()
+            self._chat_insert(label, *base_tags, "md_link")
+            self._chat_insert(f" ({url})", *base_tags, "md_link_url")
+            return
+
+        if (token.startswith("***") and token.endswith("***")) or (
+            token.startswith("___") and token.endswith("___")
+        ):
+            self._chat_insert(token[3:-3], *base_tags, "md_bold_italic")
+            return
+        if (token.startswith("**") and token.endswith("**")) or (
+            token.startswith("__") and token.endswith("__")
+        ):
+            self._chat_insert(token[2:-2], *base_tags, "md_bold")
+            return
+        if (token.startswith("*") and token.endswith("*")) or (
+            token.startswith("_") and token.endswith("_")
+        ):
+            self._chat_insert(token[1:-1], *base_tags, "md_italic")
+            return
+
+        self._chat_insert(token, *base_tags)
+
     def _render_chat(self) -> None:
         self.chat_text.configure(state="normal")
         self.chat_text.delete("1.0", END)
@@ -1481,7 +1730,8 @@ class TkChatApp:
             self.chat_text.insert(END, f"{role_display}\n", ("title",))
             tag = role if role in {"user", "assistant", "system", "error"} else "system"
             body = text if text.strip() else "…"
-            self.chat_text.insert(END, f"{body}\n\n", (tag,))
+            self._render_markdown(tag, body)
+            self._chat_insert("\n", tag)
         self.chat_text.configure(state="disabled")
         self.chat_text.see(END)
 

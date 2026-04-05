@@ -125,7 +125,16 @@ def test_extract_stream_delta_openai_compatible():
         "openai_compatible",
         {"choices": [{"delta": {"content": "hello "}}]},
     )
-    assert delta == "hello"
+    assert delta == "hello "
+
+
+def test_extract_stream_delta_openai_compatible_preserves_newline():
+    client = ChatApiClient()
+    delta = client.extract_stream_delta(
+        "openai_compatible",
+        {"choices": [{"delta": {"content": "\n"}}]},
+    )
+    assert delta == "\n"
 
 
 def test_extract_stream_delta_openai_responses():

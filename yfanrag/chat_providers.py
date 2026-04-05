@@ -181,10 +181,10 @@ class ChatApiClient:
                 if isinstance(first, Mapping):
                     delta = first.get("delta")
                     if isinstance(delta, Mapping):
-                        return _flatten_content(delta.get("content")).strip()
+                        return _flatten_content(delta.get("content"))
                     message = first.get("message")
                     if isinstance(message, Mapping):
-                        return _flatten_content(message.get("content")).strip()
+                        return _flatten_content(message.get("content"))
             return ""
 
         if provider == "openai_responses":

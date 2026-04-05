@@ -1,4 +1,4 @@
-"""Plain text and Markdown loader."""
+"""Plain text and source-code loader."""
 
 from __future__ import annotations
 
@@ -11,12 +11,42 @@ from .base import BaseLoader
 from ..models import Document
 from ..security import ensure_path_in_whitelist, whitelist_from_env
 
+DEFAULT_TEXT_EXTENSIONS: tuple[str, ...] = (
+    ".txt",
+    ".md",
+    ".rst",
+    ".py",
+    ".gd",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".java",
+    ".go",
+    ".rs",
+    ".c",
+    ".h",
+    ".cpp",
+    ".hpp",
+    ".cs",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".sql",
+    ".sh",
+    ".ps1",
+    ".bat",
+)
+
 
 @dataclass
 class TextFileLoader(BaseLoader):
     paths: Sequence[str]
     encoding: str = "utf-8"
-    allow_extensions: Sequence[str] = (".txt", ".md")
+    allow_extensions: Sequence[str] = DEFAULT_TEXT_EXTENSIONS
     path_whitelist: Sequence[str] | None = None
 
     def load(self) -> List[Document]:
