@@ -582,6 +582,11 @@ class AppKnowledgeBaseMixin:
 
     @staticmethod
     def _kb_score_text(hit: KnowledgeBaseHit) -> str:
+        prefix = ""
+        if hit.rerank_score is not None:
+            prefix += f"rerank={hit.rerank_score:.4f} "
+        if hit.rrf_score is not None:
+            prefix += f"rrf={hit.rrf_score:.4f} "
         if hit.source == "hybrid":
             fused = 0.0 if hit.score is None else hit.score
             vector_score = 0.0 if hit.vector_score is None else hit.vector_score
@@ -590,24 +595,18 @@ class AppKnowledgeBaseMixin:
                 f"fused={fused:.4f} "
                 f"vec={vector_score:.4f} fts={fts_score:.4f}"
             )
-            if hit.rrf_score is not None:
-                return f"rrf={hit.rrf_score:.4f} {body}"
-            return body
+            return f"{prefix}{body}".strip()
         if hit.source == "vector":
             if hit.distance is None:
                 body = "vector"
             else:
                 body = f"distance={hit.distance:.4f}"
-            if hit.rrf_score is not None:
-                return f"rrf={hit.rrf_score:.4f} {body}"
-            return body
+            return f"{prefix}{body}".strip()
         if hit.score is None:
             body = "fts"
         else:
             body = f"bm25={hit.score:.4f}"
-        if hit.rrf_score is not None:
-            return f"rrf={hit.rrf_score:.4f} {body}"
-        return body
+        return f"{prefix}{body}".strip()
 
     @staticmethod
     def _kb_plan_summary(plan: KnowledgeBaseQueryPlan) -> str:
@@ -626,6 +625,13 @@ class AppKnowledgeBaseMixin:
                 parts.append(f"fusion={plan.fusion}({mq_count},k={plan.rrf_k})")
         if plan.candidate_top_k is not None:
             parts.append(f"cand_k={plan.candidate_top_k}")
+        if plan.reranker_backend is not None:
+            if plan.reranker_top_k is None:
+                parts.append(f"rerank={plan.reranker_backend}")
+            else:
+                parts.append(f"rerank={plan.reranker_backend}(top={plan.reranker_top_k})")
+        if plan.reranker_candidate_top_k is not None:
+            parts.append(f"rerank_cand={plan.reranker_candidate_top_k}")
         return ", ".join(parts)
 
     def _build_kb_context_for_user_text(self, user_text: str) -> tuple[str, str]:

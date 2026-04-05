@@ -5,8 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterable, Sequence
+import json
 import re
 import sqlite3
+import urllib.error
+import urllib.request
 
 from .chunking import FixedChunker, RecursiveChunker
 from .embedders import HashingEmbedder
@@ -42,6 +45,9 @@ _PATH_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 _CODE_HINT_RE = re.compile(r"(?:`[^`]+`|::|->|=>|==|!=|<=|>=|[{}()\[\]<>])")
+_RERANK_BACKEND_CHOICES = {"auto", "cross-encoder", "api", "heuristic", "none"}
+_CROSS_ENCODER_CACHE: dict[str, object] = {}
+_CROSS_ENCODER_FAILED_MODELS: set[str] = set()
 _EN_STOPWORDS = {
     "a",
     "an",
@@ -103,6 +109,14 @@ class KnowledgeBaseConfig:
     multi_query_count: int = 4
     multi_query_rrf_k: int = 60
     multi_query_candidate_top_k: int | None = None
+    reranker_enabled: bool = True
+    reranker_backend: str = "auto"
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    reranker_endpoint: str | None = None
+    reranker_api_key: str | None = None
+    reranker_api_key_header: str = "Authorization"
+    reranker_timeout_seconds: int = 30
+    reranker_candidate_top_k: int = 50
     path_whitelist: Sequence[str] | None = None
 
 
@@ -129,6 +143,7 @@ class KnowledgeBaseHit:
     vector_score: float | None = None
     fts_score: float | None = None
     rrf_score: float | None = None
+    rerank_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -143,6 +158,9 @@ class KnowledgeBaseQueryPlan:
     fusion: str | None = None
     rrf_k: int | None = None
     candidate_top_k: int | None = None
+    reranker_backend: str | None = None
+    reranker_candidate_top_k: int | None = None
+    reranker_top_k: int | None = None
 
 
 @dataclass(frozen=True)
@@ -270,37 +288,80 @@ class KnowledgeBaseManager:
             raise ValueError(f"unsupported query mode: {mode}")
 
         plan = self._build_query_plan(text, top_k, requested_mode, config)
+        rerank_enabled = self._reranker_enabled(config)
+        rerank_candidate_top_k = self._resolve_reranker_candidate_top_k(top_k, config)
+
         variant_count = self._resolve_multi_query_count(config)
         variants = self._expand_query_variants(text, variant_count)
         if not variants:
             variants = [text]
         if len(variants) == 1:
-            final_plan = replace(plan, query_variants=tuple(variants))
+            coarse_hits = self._execute_query_by_plan(
+                variants[0],
+                rerank_candidate_top_k,
+                plan,
+                config,
+            )
+            reranked, reranker_backend = self._maybe_rerank_hits(
+                query_text=text,
+                hits=coarse_hits,
+                top_k=top_k,
+                config=config,
+            )
+            final_plan = replace(
+                plan,
+                query_variants=tuple(variants),
+                reranker_backend=reranker_backend,
+                reranker_candidate_top_k=rerank_candidate_top_k if rerank_enabled else None,
+                reranker_top_k=top_k if reranker_backend is not None else None,
+            )
             self._last_query_plan = final_plan
-            return self._execute_query_by_plan(variants[0], top_k, final_plan, config)
+            return reranked
 
         candidate_top_k = self._resolve_multi_query_candidate_top_k(top_k, config)
+        if rerank_enabled and candidate_top_k < rerank_candidate_top_k:
+            candidate_top_k = rerank_candidate_top_k
         rrf_k = self._normalize_rrf_k(config.multi_query_rrf_k)
         runs: list[list[KnowledgeBaseHit]] = []
         for variant in variants:
             hits = self._execute_query_by_plan(variant, candidate_top_k, plan, config)
             if hits:
                 runs.append(hits)
+        if not runs:
+            final_plan = replace(
+                plan,
+                query_variants=tuple(variants),
+                fusion="rrf",
+                rrf_k=rrf_k,
+                candidate_top_k=candidate_top_k,
+                reranker_candidate_top_k=rerank_candidate_top_k if rerank_enabled else None,
+            )
+            self._last_query_plan = final_plan
+            return []
+
+        fused_hits = self._fuse_rrf_hits(
+            runs=runs,
+            top_k=rerank_candidate_top_k,
+            rrf_k=rrf_k,
+        )
+        reranked, reranker_backend = self._maybe_rerank_hits(
+            query_text=text,
+            hits=fused_hits,
+            top_k=top_k,
+            config=config,
+        )
         final_plan = replace(
             plan,
             query_variants=tuple(variants),
             fusion="rrf",
             rrf_k=rrf_k,
             candidate_top_k=candidate_top_k,
+            reranker_backend=reranker_backend,
+            reranker_candidate_top_k=rerank_candidate_top_k if rerank_enabled else None,
+            reranker_top_k=top_k if reranker_backend is not None else None,
         )
         self._last_query_plan = final_plan
-        if not runs:
-            return []
-        return self._fuse_rrf_hits(
-            runs=runs,
-            top_k=top_k,
-            rrf_k=rrf_k,
-        )
+        return reranked
 
     def list_doc_ids(
         self,
@@ -540,6 +601,328 @@ class KnowledgeBaseManager:
                 )
             )
         return merged
+
+    def _maybe_rerank_hits(
+        self,
+        query_text: str,
+        hits: Sequence[KnowledgeBaseHit],
+        top_k: int,
+        config: KnowledgeBaseConfig,
+    ) -> tuple[list[KnowledgeBaseHit], str | None]:
+        if top_k <= 0:
+            return [], None
+        if not hits:
+            return [], None
+        if not self._reranker_enabled(config):
+            return self._truncate_hits(hits, top_k), None
+
+        backend = self._normalize_reranker_backend(config.reranker_backend)
+        candidate_top_k = self._resolve_reranker_candidate_top_k(top_k, config)
+        candidates = list(hits[:candidate_top_k])
+        if not candidates:
+            return [], None
+        if len(candidates) == 1:
+            single = replace(
+                candidates[0],
+                rank=1,
+                rerank_score=float(candidates[0].rrf_score or candidates[0].score or 0.0),
+            )
+            return [single], "heuristic"
+
+        if backend in {"auto", "cross-encoder"}:
+            scores = self._try_cross_encoder_rerank_scores(
+                query_text=query_text,
+                hits=candidates,
+                config=config,
+            )
+            if scores:
+                return self._apply_rerank_scores(candidates, scores, top_k), "cross-encoder"
+
+        if backend in {"auto", "api"}:
+            scores = self._try_api_rerank_scores(
+                query_text=query_text,
+                hits=candidates,
+                top_k=top_k,
+                config=config,
+            )
+            if scores:
+                return self._apply_rerank_scores(candidates, scores, top_k), "api"
+
+        scores = self._heuristic_rerank_scores(query_text=query_text, hits=candidates)
+        return self._apply_rerank_scores(candidates, scores, top_k), "heuristic"
+
+    @staticmethod
+    def _truncate_hits(hits: Sequence[KnowledgeBaseHit], top_k: int) -> list[KnowledgeBaseHit]:
+        output: list[KnowledgeBaseHit] = []
+        for idx, hit in enumerate(hits[:top_k], start=1):
+            output.append(replace(hit, rank=idx))
+        return output
+
+    @staticmethod
+    def _apply_rerank_scores(
+        hits: Sequence[KnowledgeBaseHit],
+        scores: dict[int, float],
+        top_k: int,
+    ) -> list[KnowledgeBaseHit]:
+        def _fallback_score(idx: int, hit: KnowledgeBaseHit) -> float:
+            if idx in scores:
+                return float(scores[idx])
+            if hit.rrf_score is not None:
+                return float(hit.rrf_score)
+            if hit.score is not None:
+                return float(hit.score)
+            return 0.0
+
+        ranked = sorted(
+            enumerate(hits),
+            key=lambda pair: (
+                _fallback_score(pair[0], pair[1]),
+                -int(pair[1].rank),
+                -pair[0],
+            ),
+            reverse=True,
+        )
+        output: list[KnowledgeBaseHit] = []
+        for idx, (source_index, hit) in enumerate(ranked[:top_k], start=1):
+            output.append(
+                replace(
+                    hit,
+                    rank=idx,
+                    rerank_score=_fallback_score(source_index, hit),
+                )
+            )
+        return output
+
+    def _heuristic_rerank_scores(
+        self,
+        query_text: str,
+        hits: Sequence[KnowledgeBaseHit],
+    ) -> dict[int, float]:
+        query_terms = [
+            term.lower()
+            for term in _WORD_RE.findall(query_text)
+            if self._is_query_keyword(term)
+        ]
+        query_unique = list(dict.fromkeys(query_terms))
+        query_joined = " ".join(query_terms)
+
+        scores: dict[int, float] = {}
+        for idx, hit in enumerate(hits):
+            doc_terms = [term.lower() for term in _WORD_RE.findall(hit.text)]
+            if not doc_terms:
+                prior = float(hit.rrf_score or hit.score or 0.0)
+                scores[idx] = prior
+                continue
+
+            doc_set = set(doc_terms)
+            overlap = sum(1 for term in query_unique if term in doc_set)
+            overlap_ratio = overlap / float(max(1, len(query_unique)))
+
+            frequency = sum(doc_terms.count(term) for term in query_unique[:10])
+            phrase_bonus = 0.0
+            if query_joined:
+                compact_doc = " ".join(doc_terms)
+                if query_joined in compact_doc:
+                    phrase_bonus = 1.5
+            adjacency_bonus = self._adjacency_bonus(query_unique, doc_terms)
+            prior = float(hit.rrf_score or hit.score or 0.0)
+            score = (
+                overlap_ratio * 3.2
+                + float(frequency) * 0.08
+                + phrase_bonus
+                + adjacency_bonus
+                + prior * 0.05
+            )
+            scores[idx] = score
+        return scores
+
+    @staticmethod
+    def _adjacency_bonus(query_terms: Sequence[str], doc_terms: Sequence[str]) -> float:
+        if len(query_terms) < 2 or not doc_terms:
+            return 0.0
+        compact_doc = " ".join(doc_terms)
+        bonus = 0.0
+        for idx in range(0, len(query_terms) - 1):
+            phrase = f"{query_terms[idx]} {query_terms[idx + 1]}"
+            if phrase and phrase in compact_doc:
+                bonus += 0.25
+        return min(1.0, bonus)
+
+    def _try_cross_encoder_rerank_scores(
+        self,
+        query_text: str,
+        hits: Sequence[KnowledgeBaseHit],
+        config: KnowledgeBaseConfig,
+    ) -> dict[int, float] | None:
+        model_name = (config.reranker_model or "").strip()
+        if not model_name:
+            model_name = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        if model_name in _CROSS_ENCODER_FAILED_MODELS:
+            return None
+        try:
+            model = _CROSS_ENCODER_CACHE.get(model_name)
+            if model is None:
+                from sentence_transformers import CrossEncoder  # type: ignore
+
+                model = CrossEncoder(model_name)
+                _CROSS_ENCODER_CACHE[model_name] = model
+            pairs = [(query_text, hit.text) for hit in hits]
+            raw_scores = model.predict(pairs)
+            if hasattr(raw_scores, "tolist"):
+                raw_scores = raw_scores.tolist()
+            scores: dict[int, float] = {}
+            for idx, raw in enumerate(raw_scores):
+                value = raw
+                if isinstance(value, (list, tuple)) and value:
+                    value = value[0]
+                try:
+                    scores[idx] = float(value)
+                except (TypeError, ValueError):
+                    continue
+            return scores or None
+        except Exception:
+            _CROSS_ENCODER_FAILED_MODELS.add(model_name)
+            return None
+
+    def _try_api_rerank_scores(
+        self,
+        query_text: str,
+        hits: Sequence[KnowledgeBaseHit],
+        top_k: int,
+        config: KnowledgeBaseConfig,
+    ) -> dict[int, float] | None:
+        endpoint = (config.reranker_endpoint or "").strip()
+        if not endpoint:
+            return None
+
+        payload = {
+            "query": query_text,
+            "top_k": top_k,
+            "documents": [
+                {
+                    "index": idx,
+                    "chunk_id": hit.chunk_id,
+                    "doc_id": hit.doc_id,
+                    "text": hit.text,
+                }
+                for idx, hit in enumerate(hits)
+            ],
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        api_key = (config.reranker_api_key or "").strip()
+        if api_key:
+            key_header = (config.reranker_api_key_header or "Authorization").strip()
+            if not key_header:
+                key_header = "Authorization"
+            if key_header.lower() == "authorization" and not api_key.lower().startswith("bearer "):
+                headers[key_header] = f"Bearer {api_key}"
+            else:
+                headers[key_header] = api_key
+
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            endpoint,
+            data=body,
+            headers=headers,
+            method="POST",
+        )
+        timeout_seconds = int(config.reranker_timeout_seconds or 30)
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+        except (urllib.error.HTTPError, urllib.error.URLError):
+            return None
+
+        try:
+            response_payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return self._parse_api_rerank_scores(response_payload, len(hits))
+
+    @staticmethod
+    def _parse_api_rerank_scores(payload: object, item_count: int) -> dict[int, float] | None:
+        rows: list[object] | None = None
+        if isinstance(payload, list):
+            rows = payload
+        elif isinstance(payload, dict):
+            for key in ("results", "data", "items", "ranked"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    rows = value
+                    break
+        if not rows:
+            return None
+
+        scores: dict[int, float] = {}
+        for pos, row in enumerate(rows):
+            idx: int | None = None
+            score: float | None = None
+            if isinstance(row, dict):
+                for key in ("index", "idx", "id", "document_index"):
+                    raw_idx = row.get(key)
+                    if isinstance(raw_idx, int):
+                        idx = raw_idx
+                        break
+                    if isinstance(raw_idx, str) and raw_idx.strip().isdigit():
+                        idx = int(raw_idx.strip())
+                        break
+                raw_score = row.get("score")
+                if isinstance(raw_score, (int, float)):
+                    score = float(raw_score)
+                elif isinstance(raw_score, str):
+                    try:
+                        score = float(raw_score.strip())
+                    except ValueError:
+                        score = None
+                if score is None:
+                    raw_rank = row.get("rank")
+                    if isinstance(raw_rank, (int, float)):
+                        score = 1.0 / float(1 + int(raw_rank))
+            elif isinstance(row, int):
+                idx = row
+            elif isinstance(row, str) and row.strip().isdigit():
+                idx = int(row.strip())
+
+            if idx is None:
+                continue
+            if idx < 0 or idx >= item_count:
+                continue
+            if score is None:
+                score = 1.0 / float(1 + pos)
+            scores[idx] = score
+        return scores or None
+
+    @staticmethod
+    def _normalize_reranker_backend(value: str) -> str:
+        backend = (value or "").strip().lower()
+        if not backend:
+            return "auto"
+        if backend not in _RERANK_BACKEND_CHOICES:
+            return "auto"
+        return backend
+
+    def _reranker_enabled(self, config: KnowledgeBaseConfig) -> bool:
+        if not config.reranker_enabled:
+            return False
+        backend = self._normalize_reranker_backend(config.reranker_backend)
+        return backend != "none"
+
+    def _resolve_reranker_candidate_top_k(
+        self,
+        top_k: int,
+        config: KnowledgeBaseConfig,
+    ) -> int:
+        if not self._reranker_enabled(config):
+            return top_k
+        numeric = int(config.reranker_candidate_top_k)
+        if numeric <= 0:
+            numeric = 50
+        if numeric > 200:
+            numeric = 200
+        return max(top_k, numeric)
 
     @staticmethod
     def _resolve_multi_query_count(config: KnowledgeBaseConfig) -> int:

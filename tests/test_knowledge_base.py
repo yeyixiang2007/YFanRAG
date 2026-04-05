@@ -27,6 +27,8 @@ def _build_config(tmp_path: Path) -> KnowledgeBaseConfig:
         chunk_size=64,
         chunk_overlap=8,
         disable_sqlite_extension=True,
+        reranker_backend="heuristic",
+        reranker_candidate_top_k=50,
     )
 
 
@@ -98,6 +100,9 @@ def test_knowledge_base_auto_routing_and_dynamic_params(tmp_path: Path) -> None:
     assert 3 <= len(keyword_plan.query_variants) <= 5
     assert keyword_plan.rrf_k is not None
     assert keyword_plan.candidate_top_k is not None
+    assert keyword_plan.reranker_backend == "heuristic"
+    assert keyword_plan.reranker_candidate_top_k == 50
+    assert keyword_plan.reranker_top_k == 3
 
     manager.query(
         "请解释 vector search 与 full text search 在语义召回质量、精确匹配能力和延迟成本上的区别，"
@@ -112,6 +117,7 @@ def test_knowledge_base_auto_routing_and_dynamic_params(tmp_path: Path) -> None:
     assert semantic_plan.query_type == "semantic"
     assert semantic_plan.fusion == "rrf"
     assert 3 <= len(semantic_plan.query_variants) <= 5
+    assert semantic_plan.reranker_backend == "heuristic"
 
     manager.query("sqlite vector search 区别", top_k=4, mode="auto", config=config)
     hybrid_plan = manager.last_query_plan
@@ -124,6 +130,7 @@ def test_knowledge_base_auto_routing_and_dynamic_params(tmp_path: Path) -> None:
     assert hybrid_plan.fts_top_k >= 4
     assert hybrid_plan.fusion == "rrf"
     assert 3 <= len(hybrid_plan.query_variants) <= 5
+    assert hybrid_plan.reranker_backend == "heuristic"
 
     no_fts_config = replace(config, enable_fts=False)
     manager.query("sqlite keyword", top_k=3, mode="auto", config=no_fts_config)
@@ -132,6 +139,7 @@ def test_knowledge_base_auto_routing_and_dynamic_params(tmp_path: Path) -> None:
     assert fallback_plan.resolved_mode == "vector"
     assert fallback_plan.query_type == "fts-unavailable"
     assert fallback_plan.fusion == "rrf"
+    assert fallback_plan.reranker_backend == "heuristic"
 
 
 def test_knowledge_base_multi_query_rrf_hits(tmp_path: Path) -> None:
@@ -148,6 +156,7 @@ def test_knowledge_base_multi_query_rrf_hits(tmp_path: Path) -> None:
     )
     assert hits
     assert all(hit.rrf_score is not None for hit in hits)
+    assert all(hit.rerank_score is not None for hit in hits)
     assert hits[0].source == "hybrid"
 
     plan = manager.last_query_plan
@@ -156,6 +165,9 @@ def test_knowledge_base_multi_query_rrf_hits(tmp_path: Path) -> None:
     assert plan.fusion == "rrf"
     assert 3 <= len(plan.query_variants) <= 5
     assert plan.candidate_top_k is not None
+    assert plan.reranker_backend == "heuristic"
+    assert plan.reranker_candidate_top_k == 50
+    assert plan.reranker_top_k == 3
 
 
 def test_knowledge_base_disable_multi_query(tmp_path: Path) -> None:
@@ -170,3 +182,21 @@ def test_knowledge_base_disable_multi_query(tmp_path: Path) -> None:
     assert plan is not None
     assert plan.fusion is None
     assert len(plan.query_variants) == 1
+    assert plan.reranker_backend == "heuristic"
+
+
+def test_knowledge_base_disable_reranker(tmp_path: Path) -> None:
+    _write_demo_docs(tmp_path)
+    manager = KnowledgeBaseManager()
+    config = replace(
+        _build_config(tmp_path),
+        reranker_enabled=False,
+    )
+    manager.ingest_paths([str(tmp_path)], config)
+    hits = manager.query("vector search", top_k=3, mode="vector", config=config)
+
+    assert hits
+    assert all(hit.rerank_score is None for hit in hits)
+    plan = manager.last_query_plan
+    assert plan is not None
+    assert plan.reranker_backend is None

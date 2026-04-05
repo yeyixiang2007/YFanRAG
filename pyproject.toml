@@ -20,6 +20,9 @@ sqlite = [
 duckdb = [
     "duckdb>=1.0.0",
 ]
+rerank = [
+    "sentence-transformers>=2.7.0",
+]
 
 [project.scripts]
 yfanrag = "yfanrag.cli:main"

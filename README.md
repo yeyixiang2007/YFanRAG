@@ -8,7 +8,7 @@
 - 多后端向量存储：`sqlite-vec`、`sqlite-vec1`、`duckdb-vss`、`memory`
 - 检索模式：`auto` 自适应路由、向量检索、FTS 检索、混合检索（向量 + FTS）
 - 数据维护：增量更新、按 `doc_id` 删除、跨后端迁移
-- 查询增强：字段过滤、范围过滤、Multi-Query 扩展、RRF 融合、批处理与 embedding 缓存
+- 查询增强：字段过滤、范围过滤、Multi-Query 扩展、RRF 融合、二阶段重排（Reranker）、批处理与 embedding 缓存
 - 工程能力：Benchmark 报告、统一日志、慢查询提示、安全白名单
 
 ## 架构图
@@ -63,6 +63,7 @@ pip install -e .[dev]
 ```powershell
 pip install -e .[sqlite]   # sqlite-vec
 pip install -e .[duckdb]   # duckdb-vss
+pip install -e .[rerank]   # cross-encoder reranker (sentence-transformers)
 ```
 
 ### 2) 入库
@@ -254,7 +255,7 @@ python examples/04_tk_chat_app.py
 1. 选择 `Database` 文件、`Store`（推荐 `sqlite-vec1`）、`Chunker`、`Chunk Size/Overlap`、`Embedding Dims`。
 2. 点击 `Add Files` 或 `Add Folder` 选择文本/代码文件（如 `.md/.txt/.py/.gd/.js` 等），然后点 `Ingest / Upsert` 入库。
 3. 用 `Refresh Stats` 查看当前 `docs/chunks` 统计，用 `List Doc IDs` 查看可删除文档 ID。
-4. 在 `KB Query` 输入检索词并 `Run Query` 预览召回结果（支持 `auto / vector / hybrid / fts`；查询会先扩展为 3-5 个子查询，再做 RRF 融合）。
+4. 在 `KB Query` 输入检索词并 `Run Query` 预览召回结果（支持 `auto / vector / hybrid / fts`；查询会先扩展为 3-5 个子查询并做 RRF，再进入二阶段重排）。
 5. 在 `Delete Doc ID(s)` 输入一个或多个 `doc_id`（空格/逗号分隔）并点击 `Delete`。
 
 ### 自适应检索路由（`auto`）
@@ -276,6 +277,22 @@ python examples/04_tk_chat_app.py
   - RRF 常数：`k=60`
   - 子查询候选召回深度：默认按 `top_k` 动态放大（约 `3x`）
 - 该能力适用于 `auto / vector / hybrid / fts`，用于提升召回率与长尾问题命中率。
+
+### 二阶段重排（Reranker）
+
+- 在 Multi-Query + RRF 之后执行二阶段重排：
+  - 第一阶段：粗召回候选（默认 `Top50`）
+  - 第二阶段：对候选做语义重排，输出最终 `TopK`（常见为 `Top5`）
+- 支持三种 rerank backend：
+  - `cross-encoder`：本地交叉编码器重排（需安装 `sentence-transformers`）
+  - `api`：调用外部重排 API（通过 `reranker_endpoint` 配置）
+  - `heuristic`：本地轻量词项匹配重排（默认兜底）
+- 默认策略：`auto`（优先 `cross-encoder`，其次 `api`，最后回退 `heuristic`）。
+- 关键参数（`KnowledgeBaseConfig`）：
+  - `reranker_enabled`
+  - `reranker_backend`
+  - `reranker_candidate_top_k`（默认 50）
+  - `reranker_model` / `reranker_endpoint` / `reranker_api_key`
 
 ### 在对话中启用知识库增强
 
