@@ -72,7 +72,7 @@ class TkChatApp(
         self.kb_chunker_var = tk.StringVar(value="structured")
         self.kb_chunk_size_var = tk.StringVar(value="800")
         self.kb_chunk_overlap_var = tk.StringVar(value="120")
-        self.kb_dims_var = tk.StringVar(value="8")
+        self.kb_dims_var = tk.StringVar(value="384")
         self.kb_query_mode_var = tk.StringVar(value="auto")
         self.kb_query_var = tk.StringVar(value="")
         self.kb_top_k_var = tk.StringVar(value="3")

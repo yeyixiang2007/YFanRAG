@@ -28,6 +28,22 @@ class CountingEmbedder:
         return [[float(len(text))] for text in batch]
 
 
+class QueryAwareEmbedder:
+    def __init__(self):
+        self.document_calls = []
+        self.query_calls = []
+
+    def embed_documents(self, texts):
+        batch = list(texts)
+        self.document_calls.append(batch)
+        return [[1.0] for _ in batch]
+
+    def embed_queries(self, texts):
+        batch = list(texts)
+        self.query_calls.append(batch)
+        return [[2.0] for _ in batch]
+
+
 def test_pipeline_minimal_loop():
     doc = Document(doc_id="doc-1", text="hello yfanrag")
     pipeline = SimplePipeline(
@@ -138,3 +154,19 @@ def test_pipeline_ingest_uses_embedding_cache():
     calls_before = len(embedder.calls)
     pipeline.ingest([Document(doc_id="doc-3", text="hello")])
     assert len(embedder.calls) == calls_before
+
+
+def test_pipeline_uses_document_and_query_embedding_methods():
+    embedder = QueryAwareEmbedder()
+    pipeline = SimplePipeline(
+        chunker=FixedChunker(chunk_size=50, chunk_overlap=0),
+        embedder=embedder,
+        store=InMemoryVectorStore(),
+        use_embedding_cache=False,
+    )
+
+    pipeline.ingest([Document(doc_id="doc-1", text="hello")])
+    pipeline.query("hello", top_k=1)
+
+    assert embedder.document_calls == [["hello"]]
+    assert embedder.query_calls == [["hello"]]

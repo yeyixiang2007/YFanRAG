@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from math import exp, isfinite, sqrt
 from typing import Dict, List, Sequence
 
+from .embedders import embed_queries
 from .fts import FtsMatch, SqliteFtsIndex
 from .interfaces import Embedder, FieldFilters, RangeFilters, Retriever, VectorStore
 from .models import Chunk
@@ -62,7 +63,7 @@ class HybridRetriever(Retriever):
         vector_k = vector_top_k or top_k
         fts_k = fts_top_k or top_k
 
-        embedding = self.embedder.embed([query])[0]
+        embedding = embed_queries(self.embedder, [query])[0]
         vector_chunks = self.vector_store.query(
             embedding,
             vector_k,

@@ -16,8 +16,8 @@ class ChunkingConfig:
 
 @dataclass
 class EmbeddingConfig:
-    provider: str = "local"
-    model: Optional[str] = None
+    provider: str = "auto"
+    model: Optional[str] = "BAAI/bge-small-en-v1.5"
     dims: Optional[int] = None
     batch_size: int = 64
     cache_embeddings: bool = True
@@ -42,7 +42,7 @@ class RetrievalConfig:
     top_k: int = 5
     use_fts: bool = False
     hybrid_alpha: float = 0.5
-    score_norm: str = "minmax"
+    score_norm: str = "sigmoid"
     filters: Dict[str, Any] = field(default_factory=dict)
     range_filters: Dict[str, tuple[float | int | None, float | int | None]] = field(
         default_factory=dict

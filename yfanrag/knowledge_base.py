@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterable, Sequence
+import importlib
 import json
 import math
 import re
@@ -14,7 +15,13 @@ import urllib.error
 import urllib.request
 
 from .chunking import FixedChunker, RecursiveChunker, StructureAwareChunker
-from .embedders import HashingEmbedder
+from .embedders import (
+    DEFAULT_FASTEMBED_MODEL,
+    FastEmbedder,
+    HashingEmbedder,
+    embed_queries,
+    embedder_dims,
+)
 from .fts import SqliteFtsIndex
 from .loaders.text import TextFileLoader
 from .pipeline import SimplePipeline
@@ -47,12 +54,17 @@ _PATH_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 _CODE_HINT_RE = re.compile(r"(?:`[^`]+`|::|->|=>|==|!=|<=|>=|[{}()\[\]<>])")
-_RERANK_BACKEND_CHOICES = {"auto", "cross-encoder", "api", "heuristic", "none"}
+_RERANK_BACKEND_CHOICES = {"auto", "flashrank", "cross-encoder", "api", "heuristic", "none"}
 _CROSS_ENCODER_CACHE: dict[str, object] = {}
 _CROSS_ENCODER_FAILED_MODELS: set[str] = set()
 _CROSS_ENCODER_LOADING_MODELS: set[str] = set()
 _CROSS_ENCODER_CACHE_LOCK = threading.Lock()
 _CROSS_ENCODER_CACHE_LIMIT = 2
+_FLASHRANK_CACHE: dict[str, object] = {}
+_FLASHRANK_FAILED_MODELS: set[str] = set()
+_FLASHRANK_CACHE_LOCK = threading.Lock()
+_FLASHRANK_CACHE_LIMIT = 2
+_DEFAULT_FLASHRANK_MODEL = "ms-marco-MiniLM-L-12-v2"
 _CONTEXT_CODE_HINT_RE = re.compile(
     r"(?:```|^\s{4,}|[{}();]|=>|::|\b(?:def|class|return|import|from|SELECT|INSERT|UPDATE|DELETE)\b)",
     re.IGNORECASE | re.MULTILINE,
@@ -112,7 +124,10 @@ class KnowledgeBaseConfig:
     store: str = "sqlite-vec1"
     table: str | None = None
     fts_table: str = "fts_chunks"
-    dims: int = 8
+    dims: int = 384
+    embedding_provider: str = "auto"
+    embedding_model: str = DEFAULT_FASTEMBED_MODEL
+    embedding_batch_size: int = 256
     chunker: str = "structured"
     chunk_size: int = 800
     chunk_overlap: int = 120
@@ -134,6 +149,7 @@ class KnowledgeBaseConfig:
     reranker_enabled: bool = True
     reranker_backend: str = "auto"
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    reranker_flashrank_model: str = _DEFAULT_FLASHRANK_MODEL
     reranker_endpoint: str | None = None
     reranker_api_key: str | None = None
     reranker_api_key_header: str = "Authorization"
@@ -245,8 +261,8 @@ class KnowledgeBaseManager:
             )
 
         chunker = self._build_chunker(config)
-        embedder = HashingEmbedder(dims=config.dims)
-        store = self._build_store(config)
+        embedder = self._build_embedder(config)
+        store = self._build_store(config, embedding_dim=self._resolved_embedding_dims(config, embedder))
         try:
             pipeline = SimplePipeline(
                 chunker=chunker,
@@ -446,7 +462,7 @@ class KnowledgeBaseManager:
         dedup_hits: list[KnowledgeBaseHit] = []
         dedup_texts: list[str] = []
         dedup_vectors: list[list[float]] = []
-        vector_dims = max(128, config.dims * 16)
+        vector_dims = max(128, min(1024, config.dims * 8))
         duplicate_removed = 0
 
         for hit in candidates:
@@ -536,10 +552,10 @@ class KnowledgeBaseManager:
         top_k: int,
         config: KnowledgeBaseConfig,
     ) -> list[KnowledgeBaseHit]:
-        embedder = HashingEmbedder(dims=config.dims)
-        store = self._build_store(config)
+        embedder = self._build_embedder(config)
+        store = self._build_store(config, embedding_dim=self._resolved_embedding_dims(config, embedder))
         try:
-            embedding = embedder.embed([query_text])[0]
+            embedding = embed_queries(embedder, [query_text])[0]
             chunks = store.query(embedding, top_k)
         finally:
             self._close_store(store)
@@ -592,8 +608,8 @@ class KnowledgeBaseManager:
         if fts_limit is None:
             fts_limit = self._normalize_candidate_top_k(config.fts_top_k, top_k)
 
-        embedder = HashingEmbedder(dims=config.dims)
-        store = self._build_store(config)
+        embedder = self._build_embedder(config)
+        store = self._build_store(config, embedding_dim=self._resolved_embedding_dims(config, embedder))
         fts = SqliteFtsIndex(
             path=config.db_path,
             table=self._safe_identifier(config.fts_table, label="fts table"),
@@ -769,6 +785,15 @@ class KnowledgeBaseManager:
             )
             return [single], "heuristic"
 
+        if backend in {"auto", "flashrank"}:
+            scores = self._try_flashrank_rerank_scores(
+                query_text=query_text,
+                hits=candidates,
+                config=config,
+            )
+            if scores:
+                return self._apply_rerank_scores(candidates, scores, top_k), "flashrank"
+
         if backend in {"auto", "cross-encoder"}:
             scores = self._try_cross_encoder_rerank_scores(
                 query_text=query_text,
@@ -887,6 +912,99 @@ class KnowledgeBaseManager:
             if phrase and phrase in compact_doc:
                 bonus += 0.25
         return min(1.0, bonus)
+
+    def _try_flashrank_rerank_scores(
+        self,
+        query_text: str,
+        hits: Sequence[KnowledgeBaseHit],
+        config: KnowledgeBaseConfig,
+    ) -> dict[int, float] | None:
+        model_name = (config.reranker_flashrank_model or "").strip() or _DEFAULT_FLASHRANK_MODEL
+        if model_name in _FLASHRANK_FAILED_MODELS:
+            return None
+        try:
+            ranker = self._get_or_load_flashrank_ranker(model_name)
+            if ranker is None:
+                return None
+            module = importlib.import_module("flashrank")
+            rerank_request = getattr(module, "RerankRequest", None)
+            if rerank_request is None:
+                return None
+            passages = [
+                {
+                    "id": idx,
+                    "text": hit.text,
+                    "meta": {
+                        "chunk_id": hit.chunk_id,
+                        "doc_id": hit.doc_id,
+                    },
+                }
+                for idx, hit in enumerate(hits)
+            ]
+            request = rerank_request(query=query_text, passages=passages)
+            ranked = ranker.rerank(request)
+            return self._parse_flashrank_scores(ranked, len(hits))
+        except (ImportError, OSError, RuntimeError, ValueError, TypeError):
+            _FLASHRANK_FAILED_MODELS.add(model_name)
+            return None
+
+    def _get_or_load_flashrank_ranker(self, model_name: str) -> object | None:
+        with _FLASHRANK_CACHE_LOCK:
+            ranker = _FLASHRANK_CACHE.get(model_name)
+            if ranker is not None:
+                _FLASHRANK_CACHE.pop(model_name, None)
+                _FLASHRANK_CACHE[model_name] = ranker
+                return ranker
+        module = importlib.import_module("flashrank")
+        ranker_cls = getattr(module, "Ranker", None)
+        if ranker_cls is None:
+            return None
+        ranker = ranker_cls(model_name=model_name)
+        with _FLASHRANK_CACHE_LOCK:
+            _FLASHRANK_CACHE[model_name] = ranker
+            while len(_FLASHRANK_CACHE) > _FLASHRANK_CACHE_LIMIT:
+                oldest = next(iter(_FLASHRANK_CACHE))
+                if oldest == model_name and len(_FLASHRANK_CACHE) == 1:
+                    break
+                _FLASHRANK_CACHE.pop(oldest, None)
+        return ranker
+
+    @staticmethod
+    def _parse_flashrank_scores(payload: object, item_count: int) -> dict[int, float] | None:
+        if not isinstance(payload, list):
+            return None
+        scores: dict[int, float] = {}
+        for pos, row in enumerate(payload):
+            if not isinstance(row, dict):
+                continue
+            idx: int | None = None
+            raw_idx = row.get("id")
+            if isinstance(raw_idx, int):
+                idx = raw_idx
+            elif isinstance(raw_idx, str) and raw_idx.strip().isdigit():
+                idx = int(raw_idx.strip())
+            if idx is None:
+                meta = row.get("meta")
+                if isinstance(meta, dict):
+                    meta_idx = meta.get("id") or meta.get("index")
+                    if isinstance(meta_idx, int):
+                        idx = meta_idx
+                    elif isinstance(meta_idx, str) and meta_idx.strip().isdigit():
+                        idx = int(meta_idx.strip())
+            if idx is None or idx < 0 or idx >= item_count:
+                continue
+            raw_score = row.get("score")
+            if isinstance(raw_score, (int, float)):
+                score = float(raw_score)
+            elif isinstance(raw_score, str):
+                try:
+                    score = float(raw_score.strip())
+                except ValueError:
+                    score = 1.0 / float(1 + pos)
+            else:
+                score = 1.0 / float(1 + pos)
+            scores[idx] = score
+        return scores or None
 
     def _try_cross_encoder_rerank_scores(
         self,
@@ -1612,13 +1730,18 @@ class KnowledgeBaseManager:
             return upper
         return value
 
-    def _build_store(self, config: KnowledgeBaseConfig) -> object:
+    def _build_store(
+        self,
+        config: KnowledgeBaseConfig,
+        embedding_dim: int | None = None,
+    ) -> object:
         table = self._table_name(config)
+        resolved_dim = embedding_dim if embedding_dim is not None else config.dims
         if config.store == "sqlite-vec1":
             return SqliteVec1Store(
                 path=config.db_path,
                 table=table,
-                embedding_dim=config.dims,
+                embedding_dim=resolved_dim,
                 distance_metric=config.distance_metric,
                 load_extension=not config.disable_sqlite_extension,
                 extension_path=config.sqlite_extension_path,
@@ -1628,20 +1751,49 @@ class KnowledgeBaseManager:
             return SqliteVecStore(
                 path=config.db_path,
                 table=table,
-                embedding_dim=config.dims,
+                embedding_dim=resolved_dim,
                 distance_metric=config.distance_metric,
             )
         if config.store == "duckdb-vss":
             return DuckDbVssStore(
                 path=config.db_path,
                 table=table,
-                embedding_dim=config.dims,
+                embedding_dim=resolved_dim,
                 distance_metric=config.distance_metric,
                 enable_vss=not config.disable_vss_extension,
                 persistent_index=config.vss_persistent_index,
                 fail_if_no_vss=False,
             )
         raise ValueError(f"unsupported store backend: {config.store}")
+
+    @staticmethod
+    def _resolved_embedding_dims(config: KnowledgeBaseConfig, embedder: object) -> int:
+        dims = embedder_dims(embedder)
+        if dims is not None:
+            return dims
+        if config.dims <= 0:
+            raise ValueError("embedding dims must be positive")
+        return config.dims
+
+    @staticmethod
+    def _build_embedder(config: KnowledgeBaseConfig) -> object:
+        provider = (config.embedding_provider or "auto").strip().lower()
+        if provider in {"auto", "fastembed"}:
+            try:
+                importlib.import_module("fastembed")
+                return FastEmbedder(
+                    model_name=(config.embedding_model or DEFAULT_FASTEMBED_MODEL).strip()
+                    or DEFAULT_FASTEMBED_MODEL,
+                    batch_size=max(1, int(config.embedding_batch_size or 256)),
+                )
+            except ImportError:
+                if provider == "fastembed":
+                    raise RuntimeError(
+                        "fastembed is not installed. Install with `pip install fastembed`."
+                    )
+        if provider in {"auto", "hashing", "local"}:
+            return HashingEmbedder(dims=config.dims)
+        raise ValueError(f"unsupported embedding provider: {config.embedding_provider}")
 
     @staticmethod
     def _close_store(store: object) -> None:

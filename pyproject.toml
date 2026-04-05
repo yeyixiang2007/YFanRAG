@@ -20,6 +20,12 @@ sqlite = [
 duckdb = [
     "duckdb>=1.0.0",
 ]
+fastembed = [
+    "fastembed",
+]
+flashrank = [
+    "flashrank",
+]
 rerank = [
     "sentence-transformers>=2.7.0",
 ]

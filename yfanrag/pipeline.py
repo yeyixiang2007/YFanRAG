@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Iterable, List, Sequence
 from time import perf_counter
 
+from .embedders import embed_documents, embed_queries
 from .interfaces import Chunker, Embedder, FieldFilters, RangeFilters, VectorStore
 from .models import Chunk, Document
 from .observability import log_slow_query
@@ -75,7 +76,7 @@ class SimplePipeline:
         range_filters: RangeFilters | None = None,
     ) -> List[Chunk]:
         start_ts = perf_counter()
-        embedding = self.embedder.embed([query_text])[0]
+        embedding = embed_queries(self.embedder, [query_text])[0]
         result = self.store.query(
             embedding,
             top_k,
@@ -107,7 +108,7 @@ class SimplePipeline:
         unique_pending = list(pending.keys())
         for start in range(0, len(unique_pending), self.embed_batch_size):
             batch_texts = unique_pending[start : start + self.embed_batch_size]
-            batch_vectors = self.embedder.embed(batch_texts)
+            batch_vectors = embed_documents(self.embedder, batch_texts)
             if len(batch_vectors) != len(batch_texts):
                 raise ValueError("embedder returned unexpected vector count")
             for text, raw_vec in zip(batch_texts, batch_vectors):

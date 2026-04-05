@@ -431,7 +431,7 @@ class AppKnowledgeBaseMixin:
         if store not in STORE_CHOICES:
             raise ValueError(f"unsupported store: {store}")
 
-        dims = int(self.kb_dims_var.get().strip() or "8")
+        dims = int(self.kb_dims_var.get().strip() or "384")
         chunk_size = int(self.kb_chunk_size_var.get().strip() or "800")
         chunk_overlap = int(self.kb_chunk_overlap_var.get().strip() or "120")
         chunker = self.kb_chunker_var.get().strip() or "structured"

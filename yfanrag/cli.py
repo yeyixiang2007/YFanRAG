@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 from pathlib import Path
 
 from .benchmark import RetrievalItem, evaluate_retrieval_benchmark, load_benchmark_cases
 from .chunking import FixedChunker, RecursiveChunker, StructureAwareChunker
-from .embedders import HashingEmbedder, HttpEmbedder
+from .embedders import FastEmbedder, HashingEmbedder, HttpEmbedder, embed_queries, embedder_dims
 from .fts import SqliteFtsIndex
 from .loaders.text import TextFileLoader
 from .migrations import (
@@ -53,13 +54,22 @@ def _build_embedder(args: argparse.Namespace):
             model=args.model,
             api_key_env=args.api_key_env,
         )
+    if args.embedder in {"auto", "fastembed"}:
+        try:
+            importlib.import_module("fastembed")
+            return FastEmbedder(
+                model_name=args.model or "BAAI/bge-small-en-v1.5",
+            )
+        except ImportError:
+            if args.embedder == "fastembed":
+                raise RuntimeError("fastembed is not installed. Install with `pip install fastembed`.")
     return HashingEmbedder(dims=args.dims)
 
 
-def _build_store(args: argparse.Namespace):
+def _build_store(args: argparse.Namespace, embedding_dim: int | None = None):
     if args.store == "memory":
         return InMemoryVectorStore()
-    dims = getattr(args, "dims", None)
+    dims = embedding_dim if embedding_dim is not None else getattr(args, "dims", None)
     distance_metric = getattr(args, "distance_metric", None)
     if args.store == "sqlite-vec":
         return SqliteVecStore(
@@ -139,7 +149,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
     chunker = _build_chunker(args)
     embedder = _build_embedder(args)
-    store = _build_store(args)
+    store = _build_store(args, embedding_dim=embedder_dims(embedder))
     try:
         pipeline = SimplePipeline(
             chunker=chunker,
@@ -168,10 +178,10 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
 def cmd_query(args: argparse.Namespace) -> int:
     embedder = _build_embedder(args)
-    store = _build_store(args)
+    store = _build_store(args, embedding_dim=embedder_dims(embedder))
     filters, range_filters = _parse_query_filters(args)
     try:
-        embedding = embedder.embed([args.query])[0]
+        embedding = embed_queries(embedder, [args.query])[0]
         results = store.query(
             embedding,
             args.top_k,
@@ -213,7 +223,7 @@ def cmd_fts_query(args: argparse.Namespace) -> int:
 
 def cmd_hybrid_query(args: argparse.Namespace) -> int:
     embedder = _build_embedder(args)
-    store = _build_store(args)
+    store = _build_store(args, embedding_dim=embedder_dims(embedder))
     fts = SqliteFtsIndex(path=args.db)
     filters, range_filters = _parse_query_filters(args)
     try:
@@ -364,7 +374,7 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
             fts.close()
     elif mode == "hybrid":
         embedder = _build_embedder(args)
-        store = _build_store(args)
+        store = _build_store(args, embedding_dim=embedder_dims(embedder))
         fts = SqliteFtsIndex(path=args.db)
         try:
             retriever = HybridRetriever(
@@ -398,7 +408,7 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
                 store.close()
     else:
         embedder = _build_embedder(args)
-        store = _build_store(args)
+        store = _build_store(args, embedding_dim=embedder_dims(embedder))
         try:
             report = evaluate_retrieval_benchmark(
                 cases=cases,
@@ -406,7 +416,7 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
                 retrieve=lambda query, top_k: [
                     RetrievalItem(chunk_id=chunk.chunk_id, doc_id=chunk.doc_id)
                     for chunk in store.query(
-                        embedder.embed([query])[0],
+                        embed_queries(embedder, [query])[0],
                         top_k,
                         filters=filters,
                         range_filters=range_filters,
@@ -462,7 +472,7 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--chunker", choices=["fixed", "recursive", "structured"], default="structured")
     ingest.add_argument("--chunk-size", type=int, default=800)
     ingest.add_argument("--chunk-overlap", type=int, default=120)
-    ingest.add_argument("--embedder", choices=["hashing", "http"], default="hashing")
+    ingest.add_argument("--embedder", choices=["auto", "hashing", "fastembed", "http"], default="auto")
     ingest.add_argument("--dims", type=int, default=8)
     ingest.add_argument("--endpoint")
     ingest.add_argument("--model")
@@ -487,7 +497,7 @@ def build_parser() -> argparse.ArgumentParser:
     query.add_argument("query")
     query.add_argument("--db", default="yfanrag.db")
     query.add_argument("--store", choices=_STORE_CHOICES, default="sqlite-vec")
-    query.add_argument("--embedder", choices=["hashing", "http"], default="hashing")
+    query.add_argument("--embedder", choices=["auto", "hashing", "fastembed", "http"], default="auto")
     query.add_argument("--dims", type=int, default=8)
     query.add_argument("--endpoint")
     query.add_argument("--model")
@@ -537,7 +547,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=_STORE_CHOICES,
         default="sqlite-vec",
     )
-    hybrid_query.add_argument("--embedder", choices=["hashing", "http"], default="hashing")
+    hybrid_query.add_argument("--embedder", choices=["auto", "hashing", "fastembed", "http"], default="auto")
     hybrid_query.add_argument("--dims", type=int, default=8)
     hybrid_query.add_argument("--endpoint")
     hybrid_query.add_argument("--model")
@@ -556,7 +566,7 @@ def build_parser() -> argparse.ArgumentParser:
     hybrid_query.add_argument("--vector-top-k", type=int, default=None)
     hybrid_query.add_argument("--fts-top-k", type=int, default=None)
     hybrid_query.add_argument("--alpha", type=float, default=0.5)
-    hybrid_query.add_argument("--score-norm", choices=["minmax", "none"], default="minmax")
+    hybrid_query.add_argument("--score-norm", choices=["sigmoid", "minmax", "none"], default="sigmoid")
     hybrid_query.add_argument("--distance-metric", choices=["l2", "cosine"], default=None)
     hybrid_query.add_argument(
         "--filter",
@@ -643,7 +653,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--mode", choices=["vector", "fts", "hybrid"], default="vector")
     benchmark.add_argument("--db", default="yfanrag.db")
     benchmark.add_argument("--store", choices=_STORE_CHOICES, default="sqlite-vec")
-    benchmark.add_argument("--embedder", choices=["hashing", "http"], default="hashing")
+    benchmark.add_argument("--embedder", choices=["auto", "hashing", "fastembed", "http"], default="auto")
     benchmark.add_argument("--dims", type=int, default=8)
     benchmark.add_argument("--endpoint")
     benchmark.add_argument("--model")
@@ -662,7 +672,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--case-limit", type=int, default=None)
     benchmark.add_argument("--output", default=None)
     benchmark.add_argument("--alpha", type=float, default=0.5)
-    benchmark.add_argument("--score-norm", choices=["minmax", "none"], default="minmax")
+    benchmark.add_argument("--score-norm", choices=["sigmoid", "minmax", "none"], default="sigmoid")
     benchmark.add_argument("--vector-top-k", type=int, default=None)
     benchmark.add_argument("--fts-top-k", type=int, default=None)
     benchmark.add_argument("--distance-metric", choices=["l2", "cosine"], default=None)

@@ -1,8 +1,10 @@
 from dataclasses import replace
 from pathlib import Path
+import types
 
 import pytest
 
+import yfanrag.knowledge_base as knowledge_base_module
 from yfanrag.knowledge_base import (
     KnowledgeBaseConfig,
     KnowledgeBaseHit,
@@ -27,6 +29,7 @@ def _build_config(tmp_path: Path) -> KnowledgeBaseConfig:
         store="sqlite-vec1",
         enable_fts=True,
         dims=16,
+        embedding_provider="hashing",
         chunker="fixed",
         chunk_size=64,
         chunk_overlap=8,
@@ -327,3 +330,68 @@ def test_knowledge_base_cross_encoder_preload_is_non_blocking(
 
     assert scores is None
     assert requested == [config.reranker_model]
+
+
+def test_knowledge_base_build_embedder_auto_prefers_fastembed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = KnowledgeBaseManager()
+    config = replace(
+        _build_config(tmp_path),
+        embedding_provider="auto",
+        embedding_model="BAAI/bge-small-en-v1.5",
+    )
+
+    monkeypatch.setattr(
+        knowledge_base_module.importlib,
+        "import_module",
+        lambda name: object() if name == "fastembed" else __import__(name),
+    )
+
+    embedder = manager._build_embedder(config)
+
+    assert isinstance(embedder, knowledge_base_module.FastEmbedder)
+    assert manager._resolved_embedding_dims(config, embedder) == 384
+
+
+def test_knowledge_base_flashrank_rerank_scores(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = KnowledgeBaseManager()
+    config = replace(
+        _build_config(tmp_path),
+        reranker_backend="flashrank",
+    )
+
+    class DummyRequest:
+        def __init__(self, query: str, passages: list[dict[str, object]]):
+            self.query = query
+            self.passages = passages
+
+    class DummyRanker:
+        def rerank(self, request: DummyRequest):
+            assert request.query == "vector search"
+            return [
+                {"id": 1, "score": 0.92},
+                {"id": 0, "score": 0.51},
+            ]
+
+    monkeypatch.setattr(manager, "_get_or_load_flashrank_ranker", lambda model_name: DummyRanker())
+    monkeypatch.setattr(
+        knowledge_base_module.importlib,
+        "import_module",
+        lambda name: types.SimpleNamespace(RerankRequest=DummyRequest) if name == "flashrank" else __import__(name),
+    )
+
+    scores = manager._try_flashrank_rerank_scores(
+        query_text="vector search",
+        hits=[
+            _make_hit(1, "c1", "d1", "vector basics"),
+            _make_hit(2, "c2", "d2", "vector search advanced"),
+        ],
+        config=config,
+    )
+
+    assert scores == {1: 0.92, 0: 0.51}

@@ -21,7 +21,13 @@ from .config import (
     StorageConfig,
     YFanRAGConfig,
 )
-from .embedders import EmbedderFactory, HashingEmbedder, HttpEmbedder
+from .embedders import (
+    DEFAULT_FASTEMBED_MODEL,
+    EmbedderFactory,
+    FastEmbedder,
+    HashingEmbedder,
+    HttpEmbedder,
+)
 from .fts import FtsMatch, SqliteFtsIndex
 from .interfaces import Chunker, DocumentLoader, Embedder, Retriever, VectorStore
 from .loaders.text import TextFileLoader
@@ -78,8 +84,10 @@ __all__ = [
     "RecursiveChunker",
     "StructureAwareChunker",
     "HashingEmbedder",
+    "FastEmbedder",
     "HttpEmbedder",
     "EmbedderFactory",
+    "DEFAULT_FASTEMBED_MODEL",
     "InMemoryVectorStore",
     "SqliteVecStore",
     "SqliteVec1Store",
