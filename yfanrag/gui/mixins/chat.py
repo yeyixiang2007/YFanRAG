@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from queue import Empty
 import threading
 import re
@@ -34,8 +35,9 @@ class AppChatMixin:
         r"(?:证据不足|不确定|无法确认|未知|可能|insufficient|not sure|unknown|uncertain)",
         re.IGNORECASE,
     )
-    _TRACE_DOC_RE = re.compile(r"doc_id\s*[=:]\s*([^\s,;`]+)", re.IGNORECASE)
-    _TRACE_CHUNK_RE = re.compile(r"chunk_id\s*[=:]\s*([^\s,;`]+)", re.IGNORECASE)
+    _TRACE_ID_TOKEN_RE = re.compile(r"(doc_id|chunk_id)\s*[=:]\s*", re.IGNORECASE)
+    _TRACE_LABEL_RE = re.compile(r"^\[(?P<label>[^\]\n]+)\]\s*")
+    _TRACE_SOURCE_HEADING_RE = re.compile(r"^\s*(?:引用来源|sources?)\s*[:：]\s*$", re.IGNORECASE)
 
     def _on_stop(self) -> None:
         if not self.pending:
@@ -363,12 +365,10 @@ class AppChatMixin:
     def _extract_traceability_refs_from_text(self, text: str) -> list[FeedbackReference]:
         refs: list[FeedbackReference] = []
         for line in (text or "").splitlines():
-            doc_match = self._TRACE_DOC_RE.search(line)
-            chunk_match = self._TRACE_CHUNK_RE.search(line)
-            if doc_match is None and chunk_match is None:
+            parsed = self._parse_traceability_line(line)
+            if parsed is None:
                 continue
-            doc_id = doc_match.group(1) if doc_match is not None else ""
-            chunk_id = chunk_match.group(1) if chunk_match is not None else ""
+            _, doc_id, chunk_id = parsed
             refs.append(
                 FeedbackReference(
                     doc_id=self._normalize_feedback_ref_id(doc_id),
@@ -558,6 +558,13 @@ class AppChatMixin:
                 self._chat_insert("\n", role_tag)
                 continue
 
+            if self._TRACE_SOURCE_HEADING_RE.match(line):
+                self._chat_insert("引用来源\n", role_tag, "md_source_heading")
+                continue
+
+            if self._render_traceability_line(role_tag, line):
+                continue
+
             heading_match = MARKDOWN_HEADING_RE.match(line)
             if heading_match:
                 level = min(len(heading_match.group(1)), 4)
@@ -663,6 +670,104 @@ class AppChatMixin:
             return
 
         self._chat_insert(token, *base_tags)
+
+    def _render_traceability_line(self, role_tag: str, line: str) -> bool:
+        parsed = self._parse_traceability_line(line, require_token_at_start=True)
+        if parsed is None:
+            return False
+        label, doc_id, chunk_id = parsed
+        title, meta_text, chunk_text = self._format_traceability_display(doc_id, chunk_id)
+        self._chat_insert("- ", role_tag, "md_list_marker")
+        if label:
+            self._chat_insert(f"[{label}] ", role_tag, "md_source_label")
+        self._chat_insert(title, role_tag, "md_source_item")
+        if chunk_text:
+            self._chat_insert(f" {chunk_text}", role_tag, "md_source_chunk")
+        self._chat_insert("\n", role_tag, "md_source_item")
+        if meta_text:
+            self._chat_insert(f"  {meta_text}\n", role_tag, "md_source_meta")
+        return True
+
+    @classmethod
+    def _parse_traceability_line(
+        cls,
+        line: str,
+        *,
+        require_token_at_start: bool = False,
+    ) -> tuple[str | None, str, str] | None:
+        body = (line or "").strip()
+        if not body:
+            return None
+
+        if body[:1] in {"-", "*", "+"}:
+            body = body[1:].lstrip()
+
+        label: str | None = None
+        label_match = cls._TRACE_LABEL_RE.match(body)
+        if label_match is not None:
+            label = label_match.group("label").strip() or None
+            body = body[label_match.end() :].lstrip()
+
+        matches = list(cls._TRACE_ID_TOKEN_RE.finditer(body))
+        if not matches:
+            return None
+        if require_token_at_start and matches[0].start() != 0:
+            return None
+
+        fields: dict[str, str] = {}
+        for index, match in enumerate(matches):
+            key = match.group(1).lower()
+            value_start = match.end()
+            value_end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+            value = body[value_start:value_end].strip()
+            fields[key] = value
+
+        doc_id = fields.get("doc_id", "")
+        chunk_id = fields.get("chunk_id", "")
+        if not doc_id and not chunk_id:
+            return None
+        return label, doc_id, chunk_id
+
+    @classmethod
+    def _format_traceability_display(
+        cls,
+        doc_id: str,
+        chunk_id: str,
+    ) -> tuple[str, str | None, str | None]:
+        normalized_doc = cls._normalize_feedback_ref_id(doc_id)
+        normalized_chunk = cls._normalize_feedback_ref_id(chunk_id)
+
+        title = normalized_doc or normalized_chunk or "unknown source"
+        meta_text: str | None = None
+        if normalized_doc.lower().startswith("file:"):
+            raw_path = normalized_doc[5:]
+            path = Path(raw_path)
+            if path.name:
+                title = path.name
+            parent = path.parent.as_posix()
+            if parent and parent != ".":
+                meta_text = cls._shorten_middle(parent, 72)
+            else:
+                meta_text = cls._shorten_middle(path.as_posix(), 72)
+        elif normalized_doc:
+            title = cls._shorten_middle(normalized_doc, 72)
+
+        chunk_text: str | None = None
+        if normalized_chunk:
+            if "#chunk:" in normalized_chunk:
+                chunk_text = f"[chunk {normalized_chunk.rsplit(':', 1)[-1]}]"
+            else:
+                chunk_text = f"[{cls._shorten_middle(normalized_chunk, 36)}]"
+        return title, meta_text, chunk_text
+
+    @staticmethod
+    def _shorten_middle(text: str, max_chars: int) -> str:
+        value = str(text or "")
+        if max_chars <= 3 or len(value) <= max_chars:
+            return value
+        keep_left = max(1, (max_chars - 3) // 2)
+        keep_right = max(1, max_chars - 3 - keep_left)
+        return f"{value[:keep_left]}...{value[-keep_right:]}"
 
     def _render_chat(self) -> None:
         self.chat_text.configure(state="normal")

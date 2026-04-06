@@ -681,7 +681,10 @@ class AppKnowledgeBaseMixin:
             config=config,
             plan_summary=mode_note,
         )
-        trace_refs = [f"doc_id={hit.doc_id} chunk_id={hit.chunk_id}" for hit in hits]
+        trace_refs = [
+            self._kb_trace_ref_text(citation_index, hit)
+            for citation_index, hit in enumerate(hits, start=1)
+        ]
         self._set_kb_traceability_state(True, trace_refs)
         context_block = self._format_kb_context(hits)
         payload = (
@@ -690,9 +693,11 @@ class AppKnowledgeBaseMixin:
             f"{context_block}\n\n"
             "Answer Policy (MUST follow):\n"
             "1) Output a confidence line exactly as: `证据: 充分` or `证据: 不足`.\n"
-            "2) Cite source ids in your answer using `doc_id=... chunk_id=...`.\n"
+            "2) Cite sources inline using short labels like `[来源1]`; do not put long "
+            "`doc_id=... chunk_id=...` strings inside normal prose.\n"
             "3) If evidence is insufficient, say what is missing and avoid unsupported claims.\n"
-            "4) End with `引用来源:` and list used sources as bullet lines.\n\n"
+            "4) End with `引用来源:` and list used sources as bullet lines formatted exactly as "
+            "`- [来源1] doc_id=... chunk_id=...`.\n\n"
             f"User Question:\n{user_text}"
         )
         note = (
@@ -706,12 +711,19 @@ class AppKnowledgeBaseMixin:
     @staticmethod
     def _format_kb_context(hits: Sequence[KnowledgeBaseHit]) -> str:
         blocks: list[str] = []
-        for hit in hits:
+        for citation_index, hit in enumerate(hits, start=1):
             snippet = " ".join(hit.text.split())
             blocks.append(
-                f"[{hit.rank}] doc_id={hit.doc_id} chunk_id={hit.chunk_id}\n{snippet}"
+                f"[来源{citation_index}]\n"
+                f"doc_id={hit.doc_id}\n"
+                f"chunk_id={hit.chunk_id}\n"
+                f"{snippet}"
             )
         return "\n\n".join(blocks)
+
+    @staticmethod
+    def _kb_trace_ref_text(citation_index: int, hit: KnowledgeBaseHit) -> str:
+        return f"[来源{citation_index}] doc_id={hit.doc_id} chunk_id={hit.chunk_id}"
 
     def _set_kb_feedback_context(
         self,

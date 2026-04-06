@@ -371,6 +371,39 @@ class AppLayoutMixin:
         self.chat_text.tag_configure("md_link", foreground="#60A5FA", underline=1)
         self.chat_text.tag_configure("md_link_url", foreground="#93C5FD", font=("Consolas", 10))
         self.chat_text.tag_configure("md_hr", foreground="#334155")
+        self.chat_text.tag_configure(
+            "md_source_heading",
+            foreground="#BFDBFE",
+            font=("Segoe UI", 11, "bold"),
+            spacing1=6,
+            spacing3=2,
+        )
+        self.chat_text.tag_configure(
+            "md_source_item",
+            foreground="#E2E8F0",
+            font=("Segoe UI", 10, "bold"),
+            lmargin1=12,
+            lmargin2=24,
+        )
+        self.chat_text.tag_configure(
+            "md_source_label",
+            foreground="#93C5FD",
+            font=("Consolas", 10, "bold"),
+        )
+        self.chat_text.tag_configure(
+            "md_source_chunk",
+            foreground="#FDE68A",
+            background="#1F2937",
+            font=("Consolas", 9, "bold"),
+        )
+        self.chat_text.tag_configure(
+            "md_source_meta",
+            foreground="#94A3B8",
+            font=("Consolas", 9),
+            lmargin1=24,
+            lmargin2=24,
+            spacing3=2,
+        )
 
         composer = ttk.Frame(outer, style="Card.TFrame")
         composer.grid(row=2, column=0, sticky="ew", pady=(8, 0))
