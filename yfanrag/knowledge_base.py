@@ -157,9 +157,9 @@ class KnowledgeBaseConfig:
     reranker_candidate_top_k: int = 50
     context_compress_enabled: bool = True
     context_dedup_similarity: float = 0.9
-    context_max_sentences_per_chunk: int = 2
-    context_max_chars_per_chunk: int = 420
-    context_max_total_chars: int = 2400
+    context_max_sentences_per_chunk: int = 3
+    context_max_chars_per_chunk: int = 800
+    context_max_total_chars: int = 4800
     path_whitelist: Sequence[str] | None = None
 
 
@@ -433,7 +433,7 @@ class KnowledgeBaseManager:
                 chars_after=0,
             )
 
-        pool_size = max(max_chunks * 4, max_chunks)
+        pool_size = max(max_chunks * 6, 24)
         candidates = source_hits[:pool_size]
         chars_before = sum(len(" ".join(hit.text.split())) for hit in candidates)
         if not config.context_compress_enabled:
@@ -450,7 +450,11 @@ class KnowledgeBaseManager:
         threshold = self._normalize_context_similarity_threshold(config.context_dedup_similarity)
         sentence_limit = self._normalize_context_sentence_limit(config.context_max_sentences_per_chunk)
         per_chunk_chars = self._normalize_context_chars_per_chunk(config.context_max_chars_per_chunk)
-        total_chars = self._normalize_context_total_chars(config.context_max_total_chars)
+        total_chars = self._resolve_context_total_chars(
+            max_chunks=max_chunks,
+            per_chunk_chars=per_chunk_chars,
+            configured_total_chars=config.context_max_total_chars,
+        )
 
         query_terms = [
             term.lower()
@@ -1257,6 +1261,20 @@ class KnowledgeBaseManager:
         if numeric > 12000:
             return 12000
         return numeric
+
+    @classmethod
+    def _resolve_context_total_chars(
+        cls,
+        *,
+        max_chunks: int,
+        per_chunk_chars: int,
+        configured_total_chars: int,
+    ) -> int:
+        base = cls._normalize_context_total_chars(configured_total_chars)
+        chunk_count = max(1, int(max_chunks))
+        per_chunk = cls._normalize_context_chars_per_chunk(per_chunk_chars)
+        scaled = chunk_count * min(per_chunk, 900)
+        return min(12000, max(base, scaled))
 
     @staticmethod
     def _clip_text(text: str, max_chars: int) -> str:

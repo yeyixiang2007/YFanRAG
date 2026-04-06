@@ -708,8 +708,6 @@ class AppKnowledgeBaseMixin:
         blocks: list[str] = []
         for hit in hits:
             snippet = " ".join(hit.text.split())
-            if len(snippet) > 360:
-                snippet = snippet[:357] + "..."
             blocks.append(
                 f"[{hit.rank}] doc_id={hit.doc_id} chunk_id={hit.chunk_id}\n{snippet}"
             )

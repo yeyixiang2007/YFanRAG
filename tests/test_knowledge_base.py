@@ -262,6 +262,19 @@ def test_knowledge_base_context_compression_and_dedup(tmp_path: Path) -> None:
     assert all(len(hit.text) <= config.context_max_chars_per_chunk for hit in compressed)
 
 
+def test_knowledge_base_context_total_budget_scales_with_chunk_count(tmp_path: Path) -> None:
+    manager = KnowledgeBaseManager()
+    config = _build_config(tmp_path)
+
+    total_chars = manager._resolve_context_total_chars(
+        max_chunks=7,
+        per_chunk_chars=config.context_max_chars_per_chunk,
+        configured_total_chars=config.context_max_total_chars,
+    )
+
+    assert total_chars >= 5600
+
+
 def test_knowledge_base_context_compression_disabled(tmp_path: Path) -> None:
     manager = KnowledgeBaseManager()
     config = replace(
