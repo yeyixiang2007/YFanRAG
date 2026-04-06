@@ -1,5 +1,7 @@
 # Changelog
 
+English | [简体中文](CHANGELOG.zh-CN.md)
+
 ## [Unreleased]
 
 - Reworked the root README into a GitHub-style landing page.

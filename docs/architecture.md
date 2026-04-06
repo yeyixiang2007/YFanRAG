@@ -1,8 +1,10 @@
-# 架构设计
+# Architecture
 
-YFanRAG 的设计目标是把本地 RAG 所需的核心环节压缩到一个轻量、可嵌入、可测试的代码库里，同时保留后端切换、检索增强和 GUI 入口。
+English | [简体中文](architecture.zh-CN.md)
 
-## 总体架构
+YFanRAG is designed to compress the core pieces of local RAG into a lightweight, embeddable, and testable codebase while still keeping backend flexibility, retrieval enhancement, and a desktop GUI entry point.
+
+## Overall Architecture
 
 ```mermaid
 flowchart TD
@@ -49,23 +51,23 @@ flowchart TD
   BENCH --> HY
 ```
 
-## 组件职责
+## Component Responsibilities
 
-| 层级 | 主要模块 | 责任 |
+| Layer | Main modules | Responsibility |
 | --- | --- | --- |
-| I/O | `yfanrag/loaders/text.py` | 读取本地文本/代码文件，执行路径白名单检查 |
-| Chunking | `yfanrag/chunking.py` | `fixed` / `recursive` / `structured` 分块 |
-| Embedding | `yfanrag/embedders.py` | `hashing`、`fastembed`、`http` embedding 接口 |
-| Storage | `yfanrag/vectorstores/*.py` | SQLite / DuckDB / Memory 向量存储抽象 |
-| FTS | `yfanrag/fts.py` | SQLite FTS5 建索引与检索 |
-| Retrieval | `yfanrag/retrievers.py` | 混合检索与分数融合 |
-| Orchestration | `yfanrag/pipeline.py`、`yfanrag/knowledge_base.py` | 入库、查询、rerank、上下文压缩、GUI 支撑 |
-| App | `yfanrag/cli.py`、`yfanrag/gui/*` | CLI 与 Tkinter 页面 |
-| Ops | `yfanrag/benchmark.py`、`yfanrag/migrations.py`、`yfanrag/observability.py` | 评测、迁移、日志与慢查询提示 |
+| I/O | `yfanrag/loaders/text.py` | Reads local text/code files and enforces path whitelists |
+| Chunking | `yfanrag/chunking.py` | `fixed`, `recursive`, and `structured` chunking |
+| Embedding | `yfanrag/embedders.py` | `hashing`, `fastembed`, and `http` embedding interfaces |
+| Storage | `yfanrag/vectorstores/*.py` | SQLite / DuckDB / memory vector store abstractions |
+| FTS | `yfanrag/fts.py` | SQLite FTS5 indexing and search |
+| Retrieval | `yfanrag/retrievers.py` | Hybrid retrieval and score fusion |
+| Orchestration | `yfanrag/pipeline.py`, `yfanrag/knowledge_base.py` | Ingest, query, rerank, context compression, GUI support |
+| App | `yfanrag/cli.py`, `yfanrag/gui/*` | CLI and Tkinter screens |
+| Ops | `yfanrag/benchmark.py`, `yfanrag/migrations.py`, `yfanrag/observability.py` | Benchmarking, migration, logging, slow-query hints |
 
-## 检索决策流程
+## Retrieval Decision Flow
 
-`auto` 模式主要存在于 `KnowledgeBaseManager` 和 GUI 中。它会根据信号强弱在 `fts`、`vector`、`hybrid` 之间切换。
+The `auto` mode primarily lives in `KnowledgeBaseManager` and the GUI. It switches between `fts`, `vector`, and `hybrid` based on query signals.
 
 ```mermaid
 flowchart TD
@@ -83,37 +85,37 @@ flowchart TD
   C --> O["Final Chunks / Chat Context"]
 ```
 
-## 后端对比
+## Backend Comparison
 
-| Backend | 依赖 | 优势 | 约束 |
+| Backend | Dependency | Strengths | Constraints |
 | --- | --- | --- | --- |
-| `sqlite-vec1` | SQLite，可选 vec1 扩展 | 默认推荐、易分发、可回退运行 | 没有扩展时向量检索会退化为精确扫描 |
-| `sqlite-vec` | `sqlite-vec` 扩展 | 面向 sqlite-vec 生态 | 需要显式安装扩展 |
-| `duckdb-vss` | `duckdb` | 适合 DuckDB 工作流，可建持久索引 | 当前混合检索与 FTS 不走该后端 |
-| `memory` | 无 | 零依赖、测试友好 | 不持久化 |
+| `sqlite-vec1` | SQLite with optional vec1 extension | Default recommendation, easy distribution, graceful fallback | Vector search degrades to exact scanning without the extension |
+| `sqlite-vec` | `sqlite-vec` extension | Good fit for sqlite-vec environments | Requires the extension explicitly |
+| `duckdb-vss` | `duckdb` | Natural fit for DuckDB workflows and persistent indexes | Current hybrid + FTS flow does not use this backend |
+| `memory` | none | Zero dependency, test friendly | Not persistent |
 
-## 结构化分块策略
+## Structure-Aware Chunking
 
-| Chunker | 适合内容 | 说明 |
+| Chunker | Best for | Notes |
 | --- | --- | --- |
-| `structured` | Markdown、Python、JS/TS | 识别标题、函数、类等语义边界 |
-| `recursive` | 通用文本 | 基于分隔符逐级递归切分 |
-| `fixed` | 最朴素场景 | 固定窗口切块 |
+| `structured` | Markdown, Python, JS/TS | Detects semantic boundaries like headings, functions, and classes |
+| `recursive` | General text | Recursively splits on a hierarchy of separators |
+| `fixed` | Simple cases | Fixed-size windows |
 
-## 安全与可观测性
+## Security and Observability
 
-- 路径白名单：限制 loader 读取范围
-- 扩展白名单：限制 SQLite 扩展注入路径
-- 统一日志：支持全局日志级别
-- 慢查询阈值：向量检索、FTS、pipeline 关键步骤都可记录慢查询
+- Path whitelists limit what the loader can read
+- Extension whitelists limit where SQLite extensions can be loaded from
+- Unified logging exposes a global log level
+- Slow-query thresholds can flag expensive vector, FTS, and pipeline operations
 
-## 扩展点
+## Extension Points
 
-如果你准备扩展项目，最常见的入口是：
+The most common extension points are:
 
-- 新增 loader：实现新的文档来源
-- 新增 embedder：适配不同 embedding provider
-- 新增 vector store：实现 `VectorStore` 抽象
-- 调整检索链路：扩展 reranker、fusion、压缩策略
+- Add a new loader for another document source
+- Add a new embedder for another embedding provider
+- Add a new vector store that implements the `VectorStore` abstraction
+- Adjust the retrieval pipeline with new rerankers, fusion methods, or compression strategies
 
-更细的模块地图见 [TECHNICAL.md](TECHNICAL.md)。
+See [TECHNICAL.md](TECHNICAL.md) for a deeper module map.

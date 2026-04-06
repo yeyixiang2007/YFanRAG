@@ -1,8 +1,8 @@
-# CLI Guide
+# CLI 指南
 
-English | [简体中文](cli.zh-CN.md)
+[English](cli.md) | 简体中文
 
-YFanRAG ships with a unified `yfanrag` CLI for ingesting documents, querying data, running benchmarks, migrating storage backends, and launching the GUI.
+YFanRAG 提供一个统一的 `yfanrag` CLI，用于入库、查询、评测、迁移和启动图形界面。
 
 ```mermaid
 flowchart LR
@@ -14,30 +14,30 @@ flowchart LR
   PARSER --> GUI["chat-ui"]
 ```
 
-## Global Options
+## 全局参数
 
 ```powershell
 yfanrag --help
 ```
 
-Global options:
+全局参数：
 
 - `--log-level INFO|DEBUG|...`
 - `--slow-query-ms 50`
 
-## Command Overview
+## 命令总览
 
-| Command | Purpose | Typical input | Typical output |
+| 命令 | 作用 | 典型输入 | 典型输出 |
 | --- | --- | --- | --- |
-| `ingest` | Chunk, embed, and persist documents | paths, store, chunker, embedder | text summary |
-| `query` | Vector search | query, store, top-k, filters | one JSON row per result |
-| `fts-query` | SQLite FTS5 search | query, top-k | one JSON row per result |
-| `hybrid-query` | Vector + FTS fusion | query, alpha, score norm | one JSON row per result |
-| `delete` | Delete by `doc_id` | one or more doc IDs | JSON summary |
-| `benchmark` | Quality and latency benchmark | dataset, mode, output | JSON report |
-| `migrate-vec0-to-vec1` | vec0 -> vec1 migration | db, source/target tables | JSON summary |
-| `migrate-sqlite-duckdb` | Bidirectional SQLite / DuckDB migration | direction, db paths | JSON summary |
-| `chat-ui` | Launch the Tkinter GUI | none | opens a desktop window |
+| `ingest` | 文档分块、向量化并入库 | 路径、store、chunker、embedder | 文本摘要 |
+| `query` | 向量检索 | query、store、top-k、filters | 每行一个 JSON 结果 |
+| `fts-query` | SQLite FTS5 检索 | query、top-k | 每行一个 JSON 结果 |
+| `hybrid-query` | 向量 + FTS 融合 | query、alpha、score-norm | 每行一个 JSON 结果 |
+| `delete` | 按 `doc_id` 删除 | doc-id 列表 | JSON 摘要 |
+| `benchmark` | 质量与延迟基准 | dataset、mode、output | JSON 报告 |
+| `migrate-vec0-to-vec1` | vec0 -> vec1 迁移 | db、source/target tables | JSON 摘要 |
+| `migrate-sqlite-duckdb` | SQLite / DuckDB 双向迁移 | direction、db paths | JSON 摘要 |
+| `chat-ui` | 启动 Tkinter GUI | 无 | 打开窗口 |
 
 ## `ingest`
 
@@ -45,9 +45,9 @@ Global options:
 yfanrag ingest docs/ --db yfanrag.db --store sqlite-vec1 --enable-fts
 ```
 
-Common flags:
+高频参数：
 
-- `paths...`: one or more files or directories
+- `paths...`：文件或目录，支持多个
 - `--store sqlite-vec|sqlite-vec1|duckdb-vss|memory`
 - `--chunker fixed|recursive|structured`
 - `--chunk-size` / `--chunk-overlap`
@@ -55,10 +55,10 @@ Common flags:
 - `--embed-batch-size`
 - `--disable-embed-cache`
 - `--enable-fts`
-- `--path-whitelist <path>`: repeatable
+- `--path-whitelist <path>`：可重复
 - `--distance-metric l2|cosine`
 
-### Examples
+### 示例
 
 ```powershell
 yfanrag ingest docs/ src/ --db yfanrag.db --store sqlite-vec1 --enable-fts
@@ -68,44 +68,44 @@ yfanrag ingest docs/ --db yfanrag.db --store sqlite-vec1 --embedder http --endpo
 
 ## `query` / `fts-query` / `hybrid-query`
 
-Vector search:
+向量检索：
 
 ```powershell
 yfanrag query "vector store" --db yfanrag.db --store sqlite-vec1 --top-k 5
 ```
 
-FTS:
+FTS：
 
 ```powershell
 yfanrag fts-query "sqlite" --db yfanrag.db --top-k 5
 ```
 
-Hybrid retrieval:
+混合检索：
 
 ```powershell
 yfanrag hybrid-query "sqlite vector" --db yfanrag.db --store sqlite-vec1 --top-k 5 --alpha 0.5
 ```
 
-### Filter Syntax
+### 过滤语法
 
-Field equality filter:
+字段过滤：
 
 ```powershell
 --filter "doc_id=file:docs/TECHNICAL.md"
 ```
 
-Range filter:
+范围过滤：
 
 ```powershell
 --range "start:0:2000"
 --range "index:0:10"
 ```
 
-Range filters currently support the keys `start`, `end`, and `index`.
+可用于范围过滤的 key：`start`、`end`、`index`。
 
-### Query Output
+### 查询输出
 
-`query`, `fts-query`, and `hybrid-query` print JSON line by line, which makes them easy to pipe into shell tools or collect in logs. For example:
+`query`、`fts-query`、`hybrid-query` 会逐行输出 JSON，便于 shell 管道或日志采集。例如：
 
 ```json
 {"rank":1,"chunk_id":"...","doc_id":"file:docs/TECHNICAL.md","text":"..."}
@@ -117,13 +117,13 @@ Range filters currently support the keys `start`, `end`, and `index`.
 yfanrag benchmark benchmarks/cases.jsonl --db yfanrag.db --mode hybrid --output report.json
 ```
 
-Supported modes:
+支持模式：
 
 - `vector`
 - `fts`
 - `hybrid`
 
-Key options:
+关键参数：
 
 - `--top-k`
 - `--case-limit`
@@ -134,7 +134,7 @@ Key options:
 - `--filter`
 - `--range`
 
-The output is a full JSON document that includes:
+输出为一个完整 JSON 文档，包含：
 
 - `hit_rate`
 - `mrr`
@@ -142,15 +142,15 @@ The output is a full JSON document that includes:
 - `latency_ms.avg/p50/p95/max`
 - `cases`
 
-## Migration Commands
+## 迁移命令
 
-vec0 -> vec1:
+vec0 -> vec1：
 
 ```powershell
 yfanrag migrate-vec0-to-vec1 --db yfanrag.db --source-table vec_chunks
 ```
 
-SQLite(vec1) <-> DuckDB(vss):
+SQLite(vec1) <-> DuckDB(vss)：
 
 ```powershell
 yfanrag migrate-sqlite-duckdb --direction sqlite-to-duckdb --sqlite-db yfanrag.db --duckdb-db yfanrag.duckdb
@@ -163,25 +163,25 @@ yfanrag migrate-sqlite-duckdb --direction duckdb-to-sqlite --duckdb-db yfanrag.d
 yfanrag chat-ui
 ```
 
-This command launches the Tkinter desktop UI. See [gui.md](gui.md) for the screen layout and the knowledge base management workflow.
+该命令会启动 Tkinter 图形界面，具体页面结构和知识库管理流程见 [gui.zh-CN.md](gui.zh-CN.md)。
 
-## Security and Observability
+## 安全与可观测性
 
-Slow-query logging:
+慢查询日志：
 
 ```powershell
 yfanrag --log-level INFO --slow-query-ms 50 query "hello" --db yfanrag.db --store sqlite-vec1
 ```
 
-Whitelist restrictions:
+白名单限制：
 
 ```powershell
 yfanrag ingest docs/ --path-whitelist "D:\Documents\GitHub\YFanRAG\docs"
 yfanrag query "hello" --store sqlite-vec1 --sqlite-extension-path "D:\ext\vec1.dll" --extension-whitelist "D:\ext"
 ```
 
-## Further Reading
+## 进一步阅读
 
-- [Getting Started](getting-started.md)
-- [Architecture](architecture.md)
-- [Performance](performance.md)
+- [快速开始](getting-started.zh-CN.md)
+- [架构设计](architecture.zh-CN.md)
+- [性能测试](performance.zh-CN.md)

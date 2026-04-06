@@ -1,6 +1,8 @@
 # Examples
 
-All examples are runnable directly from repo root:
+English | [简体中文](README.zh-CN.md)
+
+All examples are runnable directly from the repository root:
 
 ```powershell
 python examples/01_basic_ingest_query.py

@@ -1,21 +1,23 @@
 # YFanRAG
 
-> 面向个人开发者与小团队的本地优先 RAG 工具库。  
-> 直接基于 SQLite / DuckDB 运行，无需独立向量数据库。
+English | [简体中文](README.zh-CN.md)
 
-[文档中心](docs/README.md) | [快速开始](docs/getting-started.md) | [CLI 指南](docs/cli.md) | [架构设计](docs/architecture.md) | [性能测试](docs/performance.md) | [GUI 指南](docs/gui.md)
+> A local-first RAG toolkit for individual developers and small teams.  
+> Run directly on SQLite / DuckDB without a separate vector database.
 
-## 项目亮点
+[Docs](docs/README.md) | [Getting Started](docs/getting-started.md) | [CLI Guide](docs/cli.md) | [Architecture](docs/architecture.md) | [Performance](docs/performance.md) | [GUI Guide](docs/gui.md)
 
-| 方向 | 能力 |
+## Highlights
+
+| Area | Capability |
 | --- | --- |
-| 存储后端 | `sqlite-vec`、`sqlite-vec1`、`duckdb-vss`、`memory` |
-| 检索模式 | 向量检索、FTS 检索、混合检索、`auto` 自适应路由 |
-| 数据处理 | 文档加载、结构化分块、增量 upsert、按 `doc_id` 删除 |
-| 检索增强 | Multi-Query、RRF 融合、二阶段重排、上下文压缩与去重 |
-| 工程能力 | Benchmark、迁移、慢查询日志、安全白名单、Tkinter GUI |
+| Storage backends | `sqlite-vec`, `sqlite-vec1`, `duckdb-vss`, `memory` |
+| Retrieval modes | Vector search, FTS search, hybrid retrieval, adaptive `auto` routing |
+| Data handling | Document loading, structure-aware chunking, incremental upsert, delete by `doc_id` |
+| Retrieval enhancement | Multi-query expansion, RRF fusion, reranking, context compression and deduplication |
+| Engineering support | Benchmarking, migrations, slow-query logs, security whitelists, Tkinter GUI |
 
-## 架构概览
+## Architecture at a Glance
 
 ```mermaid
 flowchart LR
@@ -43,11 +45,11 @@ flowchart LR
   end
 ```
 
-更详细的模块拆解、后端对比和扩展点见 [docs/architecture.md](docs/architecture.md) 与 [docs/TECHNICAL.md](docs/TECHNICAL.md)。
+For a deeper module breakdown, backend comparison, and extension points, see [docs/architecture.md](docs/architecture.md) and [docs/TECHNICAL.md](docs/TECHNICAL.md).
 
-## 30 秒上手
+## 30-Second Quick Start
 
-### 1. 安装
+### 1. Install
 
 ```powershell
 python -m venv .venv
@@ -55,7 +57,7 @@ python -m venv .venv
 pip install -e .[dev]
 ```
 
-常见可选依赖：
+Common optional extras:
 
 ```powershell
 pip install -e .[sqlite]
@@ -64,13 +66,13 @@ pip install -e .[fastembed]
 pip install -e .[rerank]
 ```
 
-### 2. 入库
+### 2. Ingest
 
 ```powershell
 yfanrag ingest docs/ --db yfanrag.db --store sqlite-vec1 --enable-fts
 ```
 
-### 3. 检索
+### 3. Query
 
 ```powershell
 yfanrag query "vector store" --db yfanrag.db --store sqlite-vec1 --top-k 3
@@ -78,50 +80,50 @@ yfanrag fts-query "sqlite" --db yfanrag.db --top-k 3
 yfanrag hybrid-query "sqlite vector" --db yfanrag.db --store sqlite-vec1 --top-k 3 --alpha 0.5
 ```
 
-### 4. 跑基准
+### 4. Run Benchmarks
 
 ```powershell
 yfanrag benchmark benchmarks/cases.jsonl --db yfanrag.db --mode hybrid --output report.json
 .\.venv\Scripts\python scripts\perf_benchmark.py --repeat 5 --warmup 1 --output perf-report.json
 ```
 
-### 5. 打开图形界面
+### 5. Launch the GUI
 
 ```powershell
 yfanrag chat-ui
 ```
 
-完整安装、后端选择和常用操作见 [docs/getting-started.md](docs/getting-started.md)。
+For full setup details, backend selection, and common workflows, see [docs/getting-started.md](docs/getting-started.md).
 
-## 文档导航
+## Documentation Map
 
-| 文档 | 适合谁 | 主要内容 |
+| Document | Best for | Main content |
 | --- | --- | --- |
-| [docs/README.md](docs/README.md) | 所有人 | 文档地图、阅读路径、索引 |
-| [docs/getting-started.md](docs/getting-started.md) | 初次使用者 | 安装、入库、检索、迁移、常见工作流 |
-| [docs/cli.md](docs/cli.md) | CLI 用户 | 命令总览、参数说明、输出格式、配方 |
-| [docs/architecture.md](docs/architecture.md) | 想理解设计的人 | 架构、后端对比、检索流程、扩展点 |
-| [docs/gui.md](docs/gui.md) | GUI 用户 | Provider、知识库管理、反馈闭环、FAQ |
-| [docs/performance.md](docs/performance.md) | 调优与评测 | 质量 benchmark、本地性能测试、结果解读 |
-| [docs/development.md](docs/development.md) | 贡献者 | 开发环境、测试、发布、文档维护 |
-| [docs/TECHNICAL.md](docs/TECHNICAL.md) | 维护者 | 模块地图、抽象层、测试矩阵、技术备注 |
+| [docs/README.md](docs/README.md) | Everyone | Documentation map, reading paths, index |
+| [docs/getting-started.md](docs/getting-started.md) | First-time users | Installation, ingest, query, migrations, common workflows |
+| [docs/cli.md](docs/cli.md) | CLI users | Command overview, parameters, output formats, recipes |
+| [docs/architecture.md](docs/architecture.md) | Readers exploring the design | Architecture, backend comparison, retrieval flows, extension points |
+| [docs/gui.md](docs/gui.md) | GUI users | Providers, knowledge base management, feedback loop, FAQ |
+| [docs/performance.md](docs/performance.md) | Evaluation and tuning | Quality benchmark, local performance benchmark, interpretation |
+| [docs/development.md](docs/development.md) | Contributors | Dev environment, testing, release, doc maintenance |
+| [docs/TECHNICAL.md](docs/TECHNICAL.md) | Maintainers | Module map, abstractions, test matrix, technical notes |
 
-## 性能快照
+## Performance Snapshot
 
-以下是 2026-04-06 在本机基线环境上的摘要结果，完整方法和解释见 [docs/performance.md](docs/performance.md)：
+Below is a baseline summary captured on April 6, 2026. See [docs/performance.md](docs/performance.md) for the full method and interpretation.
 
-| 工作负载 | 结果 |
+| Workload | Result |
 | --- | --- |
-| 入库 | `281.919 ms avg`，约 `3011 chunks/s` |
-| `fts` 查询（core profile） | `2.731 ms p95` |
-| `vector` 查询（core profile） | `40.158 ms p95` |
-| `hybrid` 查询（default profile） | `177.688 ms p95` |
+| Ingest | `277.465 ms avg`, about `2988 chunks/s` |
+| `fts` query (`core` profile) | `3.171 ms p95` |
+| `vector` query (`core` profile) | `54.006 ms p95` |
+| `hybrid` query (`default` profile) | `231.182 ms p95` |
 
-当前这组数据是在未启用 `vec1` 扩展的 `sqlite-vec1` 回退路径上测得，因此 `vector / hybrid` 的主要成本来自 SQLite + Python 精确扫描。
+These numbers were measured on the `sqlite-vec1` fallback path without the `vec1` extension enabled, so the main cost of `vector / hybrid` comes from SQLite + Python exact scanning.
 
-## 示例
+## Examples
 
-可直接从仓库根目录运行：
+Run directly from the repository root:
 
 ```powershell
 python examples/01_basic_ingest_query.py
@@ -130,9 +132,9 @@ python examples/03_benchmark.py
 python examples/04_tk_chat_app.py
 ```
 
-示例说明见 [examples/README.md](examples/README.md)。
+See [examples/README.md](examples/README.md) for notes.
 
-## 开发
+## Development
 
 ```powershell
 pytest
@@ -140,4 +142,8 @@ python scripts/release.py 0.1.0 --dry-run
 .\scripts\release.ps1 -Version 0.1.0 -DryRun
 ```
 
-更完整的开发与发布说明见 [docs/development.md](docs/development.md)。
+See [docs/development.md](docs/development.md) for the full development and release guide.
+
+## License
+
+TBD
