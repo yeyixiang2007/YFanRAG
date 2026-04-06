@@ -1,5 +1,6 @@
 from dataclasses import replace
 from pathlib import Path
+import sqlite3
 import types
 
 import pytest
@@ -345,6 +346,42 @@ def test_knowledge_base_cross_encoder_scores_on_first_load(
     )
 
     assert scores == {0: 0.8, 1: 0.3}
+
+
+def test_knowledge_base_recovers_pending_fts_after_failed_upsert(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_demo_docs(tmp_path)
+    manager = KnowledgeBaseManager()
+    config = _build_config(tmp_path)
+    source_path = tmp_path / "alpha.md"
+    recovery_path = manager._pending_fts_recovery_path(config.db_path)
+    original_replace = knowledge_base_module.SqliteFtsIndex.replace_by_doc_ids
+    state = {"calls": 0}
+
+    def _flaky_replace(self, doc_ids, chunks):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise sqlite3.OperationalError("simulated fts replace failure")
+        return original_replace(self, doc_ids, chunks)
+
+    monkeypatch.setattr(
+        knowledge_base_module.SqliteFtsIndex,
+        "replace_by_doc_ids",
+        _flaky_replace,
+    )
+
+    with pytest.raises(sqlite3.OperationalError):
+        manager.ingest_paths([str(source_path)], config)
+
+    assert recovery_path.exists()
+
+    hits = manager.query("SQLite", top_k=3, mode="fts", config=config)
+
+    assert hits
+    assert hits[0].doc_id.endswith("alpha.md")
+    assert not recovery_path.exists()
 
 
 def test_knowledge_base_build_embedder_auto_prefers_fastembed(

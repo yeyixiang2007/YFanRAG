@@ -17,6 +17,8 @@ from ..observability import log_slow_query
 from ..security import ensure_path_in_whitelist, whitelist_from_env
 from ..sql_utils import connect_sqlite, delete_by_doc_ids_batched, validate_identifier
 
+_DOC_ID_LOAD_CHUNK_SIZE = 500
+
 
 @dataclass
 class SqliteVec1Store:
@@ -152,6 +154,40 @@ class SqliteVec1Store:
             except sqlite3.Error:
                 self._conn.rollback()
                 raise
+
+    def load_chunks_by_doc_ids(self, doc_ids: Sequence[str]) -> List[Chunk]:
+        ids = [doc_id for doc_id in doc_ids if doc_id]
+        if not ids:
+            return []
+        with self._lock:
+            rows: list[sqlite3.Row] = []
+            for start in range(0, len(ids), _DOC_ID_LOAD_CHUNK_SIZE):
+                batch = ids[start : start + _DOC_ID_LOAD_CHUNK_SIZE]
+                placeholders = ", ".join("?" for _ in batch)
+                rows.extend(
+                    self._conn.execute(
+                        f"SELECT chunk_id, doc_id, start, end_pos, meta_index, text "
+                        f"FROM {self.table} WHERE doc_id IN ({placeholders}) "
+                        "ORDER BY doc_id, start, end_pos, chunk_id",
+                        batch,
+                    ).fetchall()
+                )
+        chunks: List[Chunk] = []
+        for row in rows:
+            metadata: dict[str, object] = {}
+            if row["meta_index"] is not None:
+                metadata["index"] = row["meta_index"]
+            chunks.append(
+                Chunk(
+                    chunk_id=row["chunk_id"],
+                    doc_id=row["doc_id"],
+                    text=row["text"],
+                    start=row["start"],
+                    end=row["end_pos"],
+                    metadata=metadata,
+                )
+            )
+        return chunks
 
     def _ensure_data_schema(self) -> None:
         self._conn.execute(

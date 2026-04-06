@@ -23,6 +23,7 @@ from .embedders import (
     embedder_dims,
 )
 from .fts import SqliteFtsIndex
+from .io_utils import write_text_atomic
 from .loaders.text import TextFileLoader
 from .pipeline import SimplePipeline
 from .retrievers import HybridRetriever
@@ -65,6 +66,7 @@ _FLASHRANK_FAILED_MODELS: set[str] = set()
 _FLASHRANK_CACHE_LOCK = threading.Lock()
 _FLASHRANK_CACHE_LIMIT = 2
 _DEFAULT_FLASHRANK_MODEL = "ms-marco-MiniLM-L-12-v2"
+_PENDING_FTS_RECOVERY_VERSION = 1
 _CONTEXT_CODE_HINT_RE = re.compile(
     r"(?:```|^\s{4,}|[{}();]|=>|::|\b(?:def|class|return|import|from|SELECT|INSERT|UPDATE|DELETE)\b)",
     re.IGNORECASE | re.MULTILINE,
@@ -229,6 +231,14 @@ class KnowledgeBaseContextCompression:
     chars_after: int
 
 
+@dataclass(frozen=True)
+class _PendingFtsRecovery:
+    store: str
+    table: str
+    fts_table: str
+    doc_ids: tuple[str, ...]
+
+
 class KnowledgeBaseManager:
     """Orchestrates ingest/query/delete operations for local KB data."""
 
@@ -244,6 +254,7 @@ class KnowledgeBaseManager:
         paths: Sequence[str],
         config: KnowledgeBaseConfig,
     ) -> KnowledgeBaseIngestResult:
+        self._recover_pending_fts_consistency(config)
         normalized_paths = self._normalize_paths(paths)
         if not normalized_paths:
             raise ValueError("at least one file or directory path is required")
@@ -269,17 +280,27 @@ class KnowledgeBaseManager:
                 embedder=embedder,
                 store=store,
             )
-            if config.enable_fts and config.store != "duckdb-vss":
+            prepared = pipeline.prepare_upsert(documents)
+            if self._fts_enabled_for_config(config):
                 fts = SqliteFtsIndex(
                     path=config.db_path,
                     table=self._safe_identifier(config.fts_table, label="fts table"),
                 )
                 try:
-                    chunks = pipeline.upsert(documents, fts_index=fts)
+                    self._write_pending_fts_recovery(config, prepared.doc_ids)
+                    try:
+                        pipeline.replace_vectors(prepared)
+                    except Exception:
+                        self._clear_pending_fts_recovery(config)
+                        raise
+                    pipeline.replace_fts(prepared, fts_index=fts)
+                    self._clear_pending_fts_recovery(config)
+                    chunks = prepared.chunks
                 finally:
                     fts.close()
             else:
-                chunks = pipeline.upsert(documents)
+                pipeline.replace_vectors(prepared)
+                chunks = prepared.chunks
         finally:
             self._close_store(store)
 
@@ -294,6 +315,7 @@ class KnowledgeBaseManager:
         doc_ids: Sequence[str],
         config: KnowledgeBaseConfig,
     ) -> KnowledgeBaseDeleteResult:
+        self._recover_pending_fts_consistency(config)
         normalized_ids = [doc_id.strip() for doc_id in doc_ids if doc_id and doc_id.strip()]
         if not normalized_ids:
             raise ValueError("at least one doc_id is required")
@@ -328,6 +350,7 @@ class KnowledgeBaseManager:
         mode: str,
         config: KnowledgeBaseConfig,
     ) -> list[KnowledgeBaseHit]:
+        self._recover_pending_fts_consistency(config)
         text = query_text.strip()
         if not text:
             self._last_query_plan = None
@@ -1762,9 +1785,13 @@ class KnowledgeBaseManager:
         self,
         config: KnowledgeBaseConfig,
         embedding_dim: int | None = None,
+        *,
+        use_config_default: bool = True,
     ) -> object:
         table = self._table_name(config)
-        resolved_dim = embedding_dim if embedding_dim is not None else config.dims
+        resolved_dim = embedding_dim
+        if resolved_dim is None and use_config_default:
+            resolved_dim = config.dims
         if config.store == "sqlite-vec1":
             return SqliteVec1Store(
                 path=config.db_path,
@@ -1858,6 +1885,132 @@ class KnowledgeBaseManager:
                 chunk_overlap=config.chunk_overlap,
             )
         raise ValueError(f"unsupported chunker: {config.chunker}")
+
+    @staticmethod
+    def _fts_enabled_for_config(config: KnowledgeBaseConfig) -> bool:
+        return bool(config.enable_fts) and config.store != "duckdb-vss"
+
+    def _recover_pending_fts_consistency(self, config: KnowledgeBaseConfig) -> None:
+        if not self._fts_enabled_for_config(config):
+            return
+        marker_path = self._pending_fts_recovery_path(config.db_path)
+        recovery = self._load_pending_fts_recovery(marker_path)
+        if recovery is None:
+            return
+
+        recovery_config = replace(
+            config,
+            store=recovery.store,
+            table=recovery.table,
+            fts_table=recovery.fts_table,
+            enable_fts=True,
+        )
+        store = self._build_store(
+            recovery_config,
+            embedding_dim=None,
+            use_config_default=False,
+        )
+        fts = SqliteFtsIndex(
+            path=recovery_config.db_path,
+            table=self._safe_identifier(recovery.fts_table, label="fts table"),
+        )
+        try:
+            if not hasattr(store, "load_chunks_by_doc_ids"):
+                raise RuntimeError(
+                    f"store backend does not support FTS recovery: {recovery.store}"
+                )
+            chunks = list(store.load_chunks_by_doc_ids(recovery.doc_ids))
+            fts.replace_by_doc_ids(recovery.doc_ids, chunks)
+        finally:
+            fts.close()
+            self._close_store(store)
+        self._clear_pending_fts_recovery(config)
+
+    def _write_pending_fts_recovery(
+        self,
+        config: KnowledgeBaseConfig,
+        doc_ids: Sequence[str],
+    ) -> None:
+        ids = self._normalize_doc_ids(doc_ids)
+        if not ids:
+            self._clear_pending_fts_recovery(config)
+            return
+        payload = {
+            "version": _PENDING_FTS_RECOVERY_VERSION,
+            "store": config.store,
+            "table": self._table_name(config),
+            "fts_table": self._safe_identifier(config.fts_table, label="fts table"),
+            "doc_ids": ids,
+        }
+        write_text_atomic(
+            self._pending_fts_recovery_path(config.db_path),
+            json.dumps(payload, ensure_ascii=False, indent=2),
+        )
+
+    def _clear_pending_fts_recovery(self, config: KnowledgeBaseConfig) -> None:
+        marker_path = self._pending_fts_recovery_path(config.db_path)
+        try:
+            marker_path.unlink()
+        except FileNotFoundError:
+            return
+
+    @staticmethod
+    def _pending_fts_recovery_path(db_path: str) -> Path:
+        target = Path(db_path)
+        return target.parent / f".{target.name}.fts-recovery.json"
+
+    @classmethod
+    def _load_pending_fts_recovery(cls, marker_path: Path) -> _PendingFtsRecovery | None:
+        if not marker_path.exists():
+            return None
+        try:
+            payload = json.loads(marker_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"pending KB recovery marker is corrupted: {marker_path}"
+            ) from exc
+
+        if payload.get("version") != _PENDING_FTS_RECOVERY_VERSION:
+            raise RuntimeError(
+                f"unsupported KB recovery marker version in {marker_path}"
+            )
+        store = str(payload.get("store", "")).strip()
+        table = cls._safe_identifier(str(payload.get("table", "")).strip(), label="vector table")
+        fts_table = cls._safe_identifier(
+            str(payload.get("fts_table", "")).strip(),
+            label="fts table",
+        )
+        doc_ids = cls._normalize_doc_ids(payload.get("doc_ids", []))
+        if not store:
+            raise RuntimeError(f"pending KB recovery marker is missing store: {marker_path}")
+        if not doc_ids:
+            raise RuntimeError(f"pending KB recovery marker has no doc_ids: {marker_path}")
+        return _PendingFtsRecovery(
+            store=store,
+            table=table,
+            fts_table=fts_table,
+            doc_ids=tuple(doc_ids),
+        )
+
+    @staticmethod
+    def _normalize_doc_ids(doc_ids: Sequence[str] | object) -> list[str]:
+        if isinstance(doc_ids, (str, bytes, bytearray)):
+            return []
+        try:
+            items = list(doc_ids)
+        except TypeError:
+            return []
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            value = str(item).strip()
+            if not value:
+                continue
+            if value in seen:
+                continue
+            seen.add(value)
+            normalized.append(value)
+        return normalized
 
     def _table_name(self, config: KnowledgeBaseConfig) -> str:
         if config.store not in STORE_CHOICES:

@@ -12,6 +12,13 @@ from .models import Chunk, Document
 from .observability import log_slow_query
 
 
+@dataclass(frozen=True)
+class PreparedUpsert:
+    doc_ids: list[str]
+    chunks: list[Chunk]
+    embeddings: list[list[float]]
+
+
 @dataclass
 class SimplePipeline:
     chunker: Chunker
@@ -38,26 +45,12 @@ class SimplePipeline:
         return all_chunks
 
     def upsert(self, documents: Iterable[Document], fts_index: object | None = None) -> List[Chunk]:
-        docs = list(documents)
-        if not docs:
+        prepared = self.prepare_upsert(documents)
+        if not prepared.doc_ids:
             return []
-        doc_ids = [doc.doc_id for doc in docs]
-        chunks, embeddings = self._prepare_chunks_and_embeddings(docs)
-        if hasattr(self.store, "replace_by_doc_ids"):
-            self.store.replace_by_doc_ids(doc_ids, chunks, embeddings)
-        else:
-            self.store.delete_by_doc_ids(doc_ids)
-            if chunks:
-                self.store.add(chunks, embeddings)
-        if fts_index is not None:
-            if hasattr(fts_index, "replace_by_doc_ids"):
-                fts_index.replace_by_doc_ids(doc_ids, chunks)
-            else:
-                if hasattr(fts_index, "delete_by_doc_ids"):
-                    fts_index.delete_by_doc_ids(doc_ids)
-                if hasattr(fts_index, "add"):
-                    fts_index.add(chunks)
-        return chunks
+        self.replace_vectors(prepared)
+        self.replace_fts(prepared, fts_index=fts_index)
+        return prepared.chunks
 
     def delete(
         self,
@@ -96,6 +89,44 @@ class SimplePipeline:
 
     def clear_embedding_cache(self) -> None:
         self._embedding_cache.clear()
+
+    def prepare_upsert(self, documents: Iterable[Document]) -> PreparedUpsert:
+        docs = list(documents)
+        if not docs:
+            return PreparedUpsert(doc_ids=[], chunks=[], embeddings=[])
+        doc_ids = [doc.doc_id for doc in docs]
+        chunks, embeddings = self._prepare_chunks_and_embeddings(docs)
+        return PreparedUpsert(doc_ids=doc_ids, chunks=chunks, embeddings=embeddings)
+
+    def replace_vectors(self, prepared: PreparedUpsert) -> None:
+        if not prepared.doc_ids:
+            return
+        if hasattr(self.store, "replace_by_doc_ids"):
+            self.store.replace_by_doc_ids(
+                prepared.doc_ids,
+                prepared.chunks,
+                prepared.embeddings,
+            )
+            return
+        self.store.delete_by_doc_ids(prepared.doc_ids)
+        if prepared.chunks:
+            self.store.add(prepared.chunks, prepared.embeddings)
+
+    @staticmethod
+    def replace_fts(
+        prepared: PreparedUpsert,
+        *,
+        fts_index: object | None = None,
+    ) -> None:
+        if fts_index is None or not prepared.doc_ids:
+            return
+        if hasattr(fts_index, "replace_by_doc_ids"):
+            fts_index.replace_by_doc_ids(prepared.doc_ids, prepared.chunks)
+            return
+        if hasattr(fts_index, "delete_by_doc_ids"):
+            fts_index.delete_by_doc_ids(prepared.doc_ids)
+        if hasattr(fts_index, "add"):
+            fts_index.add(prepared.chunks)
 
     def _embed_texts(self, texts: Sequence[str]) -> List[List[float]]:
         if self.embed_batch_size <= 0:
