@@ -154,6 +154,65 @@ yfanrag ingest docs/ --db yfanrag.db --store sqlite-vec --disable-embed-cache
 {"query":"hello","expected_doc_ids":["file:docs/TECHNICAL.md"]}
 ```
 
+## 本地性能测试
+
+仓库内提供了可复现的本地性能基准脚本：
+
+```powershell
+.\.venv\Scripts\python scripts\perf_benchmark.py --repeat 5 --warmup 1 --output perf-report.json
+```
+
+默认测试配置：
+
+- 语料：`README.md`、`yfanrag/`、`tests/`、`examples/` 下的受支持文本/代码文件
+- 存储：`sqlite-vec1`
+- Embedding：`hashing`，`384 dims`
+- Chunker：`structured`，`chunk_size=800`，`chunk_overlap=120`
+- 检索：`top_k=5`
+- Profile：
+  - `core`：关闭 multi-query 与 reranker，测原始检索链路
+  - `default`：使用项目默认检索增强链路（multi-query + reranker）
+
+### 2026-04-06 本机基线结果
+
+测试环境：
+
+- 系统：Windows 11
+- Python：3.13.5
+- CPU：AMD Ryzen 9 8945HX
+- 内存：32 GB
+
+语料规模：
+
+- `66` 个文档
+- `849` 个 chunks
+- `444,096` bytes 原始文本
+
+入库性能（`repeat=5`）：
+
+| 指标 | avg | p50 | p95 | max | 吞吐 |
+| --- | --- | --- | --- | --- | --- |
+| ingest | `281.919 ms` | `279.763 ms` | `287.949 ms` | `288.799 ms` | `234.11 docs/s` / `3011.503 chunks/s` |
+
+查询延迟（每种模式 `8` 条查询，`warmup=1`，`repeat=5`，共 `40` 个样本）：
+
+| Profile | Mode | avg | p50 | p95 | max |
+| --- | --- | --- | --- | --- | --- |
+| `core` | `vector` | `36.016 ms` | `34.684 ms` | `40.158 ms` | `42.094 ms` |
+| `core` | `fts` | `2.271 ms` | `2.291 ms` | `2.731 ms` | `3.015 ms` |
+| `core` | `hybrid` | `40.363 ms` | `39.798 ms` | `44.017 ms` | `44.351 ms` |
+| `default` | `vector` | `164.847 ms` | `158.339 ms` | `194.603 ms` | `205.395 ms` |
+| `default` | `fts` | `10.739 ms` | `11.369 ms` | `12.919 ms` | `13.354 ms` |
+| `default` | `hybrid` | `166.488 ms` | `163.840 ms` | `177.688 ms` | `212.041 ms` |
+
+结果解读：
+
+- 当前仓库规模下，入库耗时约 `0.28s`，适合本地开发时频繁重建索引。
+- `FTS` 是当前环境中最快的检索路径；在 `core` profile 下，`p95` 约为 `2.7 ms`。
+- `vector` / `hybrid` 在这次测试里明显慢于 `FTS`，主要因为测试环境没有启用 `vec1` 扩展，`sqlite-vec1` 会回退到 SQLite + Python 精确扫描路径。
+- 打开 multi-query 与 reranker 后，查询延迟约提升到 `default` profile 的 `160-170 ms` 区间，换来更完整的召回与排序链路。
+- 如果要评估启用 `vec1` 扩展或 `duckdb-vss` 后的加速效果，可在当前脚本基础上切换参数后重新测试。
+
 ## 迁移与兼容
 
 vec0 -> vec1：
