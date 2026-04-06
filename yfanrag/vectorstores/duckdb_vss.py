@@ -8,13 +8,15 @@ from time import perf_counter
 
 from ..interfaces import FieldFilters, RangeFilters
 from ..models import Chunk
-from ..observability import log_slow_query
+from ..observability import get_logger, log_slow_query
 from ..sql_utils import validate_identifier
 
 try:
     import duckdb
 except ImportError:  # pragma: no cover - optional dependency
     duckdb = None
+
+_DELETE_CHUNK_SIZE = 500
 
 
 @dataclass
@@ -71,26 +73,7 @@ class DuckDbVssStore:
 
         dim = self._infer_dim(embeddings)
         self._ensure_schema(dim)
-
-        sql = (
-            f"INSERT INTO {self.table} "
-            "(chunk_id, doc_id, start_pos, end_pos, meta_index, text, embedding) "
-            f"VALUES (?, ?, ?, ?, ?, ?, ?::FLOAT[{self.embedding_dim}])"
-        )
-        rows = []
-        for chunk, emb in zip(chunks, embeddings):
-            rows.append(
-                (
-                    chunk.chunk_id,
-                    chunk.doc_id,
-                    chunk.start,
-                    chunk.end,
-                    chunk.metadata.get("index"),
-                    chunk.text,
-                    [float(x) for x in emb],
-                )
-            )
-        self._conn.executemany(sql, rows)
+        self._insert_chunks(chunks, embeddings)
 
         if self._vss_enabled:
             self._ensure_hnsw_index()
@@ -156,13 +139,44 @@ class DuckDbVssStore:
         ids = [doc_id for doc_id in doc_ids if doc_id]
         if not ids:
             return 0
-        placeholders = ", ".join(["?"] * len(ids))
-        sql = f"DELETE FROM {self.table} WHERE doc_id IN ({placeholders})"
-        cursor = self._conn.execute(sql, ids)
+        deleted = 0
+        for start in range(0, len(ids), _DELETE_CHUNK_SIZE):
+            batch = ids[start : start + _DELETE_CHUNK_SIZE]
+            placeholders = ", ".join("?" for _ in batch)
+            count_row = self._conn.execute(
+                f"SELECT COUNT(*) FROM {self.table} WHERE doc_id IN ({placeholders})",
+                batch,
+            ).fetchone()
+            if count_row is not None:
+                deleted += int(count_row[0])
+            self._conn.execute(
+                f"DELETE FROM {self.table} WHERE doc_id IN ({placeholders})",
+                batch,
+            )
+        return deleted
+
+    def replace_by_doc_ids(
+        self,
+        doc_ids: Sequence[str],
+        chunks: Sequence[Chunk],
+        embeddings: Sequence[Sequence[float]],
+    ) -> int:
+        if len(chunks) != len(embeddings):
+            raise ValueError("chunks and embeddings length mismatch")
+        dim = self._infer_dim(embeddings) if chunks else self.embedding_dim
+        if dim is not None:
+            self._ensure_schema(dim)
+        self._conn.execute("BEGIN TRANSACTION")
         try:
-            return int(cursor.rowcount)
-        except (AttributeError, TypeError, ValueError):
-            return 0
+            deleted = self.delete_by_doc_ids(doc_ids)
+            self._insert_chunks(chunks, embeddings)
+            if self._vss_enabled:
+                self._ensure_hnsw_index()
+            self._conn.execute("COMMIT")
+            return deleted
+        except duckdb.Error:
+            self._conn.execute("ROLLBACK")
+            raise
 
     def _ensure_schema(self, dim: int) -> None:
         self._ensure_dim(dim)
@@ -178,6 +192,33 @@ class DuckDbVssStore:
             ")"
         )
 
+    def _insert_chunks(
+        self,
+        chunks: Sequence[Chunk],
+        embeddings: Sequence[Sequence[float]],
+    ) -> None:
+        if not chunks:
+            return
+        sql = (
+            f"INSERT INTO {self.table} "
+            "(chunk_id, doc_id, start_pos, end_pos, meta_index, text, embedding) "
+            f"VALUES (?, ?, ?, ?, ?, ?, ?::FLOAT[{self.embedding_dim}])"
+        )
+        rows = []
+        for chunk, emb in zip(chunks, embeddings):
+            rows.append(
+                (
+                    chunk.chunk_id,
+                    chunk.doc_id,
+                    chunk.start,
+                    chunk.end,
+                    chunk.metadata.get("index"),
+                    chunk.text,
+                    [float(x) for x in emb],
+                )
+            )
+        self._conn.executemany(sql, rows)
+
     def _ensure_hnsw_index(self) -> None:
         if self._index_ready:
             return
@@ -191,6 +232,12 @@ class DuckDbVssStore:
         except duckdb.Error as exc:
             msg = str(exc).lower()
             if "already exists" not in msg:
+                get_logger().warning(
+                    "duckdb hnsw index creation failed for table=%s metric=%s error=%s",
+                    self.table,
+                    metric,
+                    str(exc),
+                )
                 return
         self._index_ready = True
 

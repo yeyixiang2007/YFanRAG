@@ -321,16 +321,19 @@ def test_knowledge_base_context_sentence_split_keeps_code_blocks_together(tmp_pa
     assert sentences[1] == "Next sentence."
 
 
-def test_knowledge_base_cross_encoder_preload_is_non_blocking(
+def test_knowledge_base_cross_encoder_scores_on_first_load(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = KnowledgeBaseManager()
     config = _build_config(tmp_path)
-    requested: list[str] = []
 
-    monkeypatch.setattr(manager, "_get_cached_cross_encoder", lambda model_name: None)
-    monkeypatch.setattr(manager, "_start_cross_encoder_preload", requested.append)
+    class DummyModel:
+        def predict(self, pairs):
+            assert len(pairs) == 2
+            return [0.8, 0.3]
+
+    monkeypatch.setattr(manager, "_get_or_load_cross_encoder", lambda model_name: DummyModel())
 
     scores = manager._try_cross_encoder_rerank_scores(
         query_text="vector search",
@@ -341,8 +344,7 @@ def test_knowledge_base_cross_encoder_preload_is_non_blocking(
         config=config,
     )
 
-    assert scores is None
-    assert requested == [config.reranker_model]
+    assert scores == {0: 0.8, 1: 0.3}
 
 
 def test_knowledge_base_build_embedder_auto_prefers_fastembed(

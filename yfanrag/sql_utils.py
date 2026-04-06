@@ -34,6 +34,7 @@ def delete_by_doc_ids_batched(
     doc_ids: Sequence[str],
     *,
     chunk_size: int = _SQLITE_DELETE_CHUNK_SIZE,
+    commit: bool = True,
 ) -> int:
     ids = [doc_id for doc_id in doc_ids if doc_id]
     if not ids:
@@ -51,7 +52,8 @@ def delete_by_doc_ids_batched(
         rowcount = getattr(cursor, "rowcount", 0)
         if isinstance(rowcount, int) and rowcount > 0:
             total += rowcount
-    conn.commit()
+    if commit:
+        conn.commit()
     return total
 
 

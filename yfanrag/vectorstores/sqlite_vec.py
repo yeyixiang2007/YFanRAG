@@ -63,47 +63,7 @@ class SqliteVecStore:
         dim = self._infer_dim(embeddings)
         with self._lock:
             self._ensure_schema(dim)
-
-            rows = []
-            has_index_col = self._has_column("meta_index")
-            for chunk, embedding in zip(chunks, embeddings):
-                index_value = chunk.metadata.get("index")
-                if has_index_col:
-                    rows.append(
-                        (
-                            chunk.chunk_id,
-                            chunk.doc_id,
-                            chunk.start,
-                            chunk.end,
-                            index_value,
-                            self._serialize(embedding),
-                            chunk.text,
-                        )
-                    )
-                else:
-                    rows.append(
-                        (
-                            chunk.chunk_id,
-                            chunk.doc_id,
-                            chunk.start,
-                            chunk.end,
-                            self._serialize(embedding),
-                            chunk.text,
-                        )
-                    )
-            if has_index_col:
-                sql = (
-                    f"INSERT INTO {self.table} "
-                    "(chunk_id, doc_id, start, end, meta_index, embedding, text) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)"
-                )
-            else:
-                sql = (
-                    f"INSERT INTO {self.table} "
-                    "(chunk_id, doc_id, start, end, embedding, text) "
-                    "VALUES (?, ?, ?, ?, ?, ?)"
-                )
-            self._conn.executemany(sql, rows)
+            self._insert_chunks(chunks, embeddings)
             self._conn.commit()
 
     def query(
@@ -175,6 +135,33 @@ class SqliteVecStore:
                 return 0
             return delete_by_doc_ids_batched(self._conn, self.table, ids)
 
+    def replace_by_doc_ids(
+        self,
+        doc_ids: Sequence[str],
+        chunks: Sequence[Chunk],
+        embeddings: Sequence[Sequence[float]],
+    ) -> int:
+        if len(chunks) != len(embeddings):
+            raise ValueError("chunks and embeddings length mismatch")
+        dim = self._infer_dim(embeddings) if chunks else self.embedding_dim
+        with self._lock:
+            if dim is not None:
+                self._ensure_schema(dim)
+            self._conn.execute("BEGIN")
+            try:
+                deleted = delete_by_doc_ids_batched(
+                    self._conn,
+                    self.table,
+                    doc_ids,
+                    commit=False,
+                ) if self._table_exists() else 0
+                self._insert_chunks(chunks, embeddings)
+                self._conn.commit()
+                return deleted
+            except sqlite3.Error:
+                self._conn.rollback()
+                raise
+
     def _load_extension(self) -> None:
         if sqlite_vec is None:
             raise RuntimeError(
@@ -233,6 +220,54 @@ class SqliteVecStore:
             (self.table,),
         ).fetchone()
         return row is not None
+
+    def _insert_chunks(
+        self,
+        chunks: Sequence[Chunk],
+        embeddings: Sequence[Sequence[float]],
+    ) -> None:
+        if not chunks:
+            return
+        rows = []
+        has_index_col = self._has_column("meta_index")
+        for chunk, embedding in zip(chunks, embeddings):
+            index_value = chunk.metadata.get("index")
+            if has_index_col:
+                rows.append(
+                    (
+                        chunk.chunk_id,
+                        chunk.doc_id,
+                        chunk.start,
+                        chunk.end,
+                        index_value,
+                        self._serialize(embedding),
+                        chunk.text,
+                    )
+                )
+            else:
+                rows.append(
+                    (
+                        chunk.chunk_id,
+                        chunk.doc_id,
+                        chunk.start,
+                        chunk.end,
+                        self._serialize(embedding),
+                        chunk.text,
+                    )
+                )
+        if has_index_col:
+            sql = (
+                f"INSERT INTO {self.table} "
+                "(chunk_id, doc_id, start, end, meta_index, embedding, text) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)"
+            )
+        else:
+            sql = (
+                f"INSERT INTO {self.table} "
+                "(chunk_id, doc_id, start, end, embedding, text) "
+                "VALUES (?, ?, ?, ?, ?, ?)"
+            )
+        self._conn.executemany(sql, rows)
 
     def _has_column(self, column_name: str) -> bool:
         if not self._table_exists():

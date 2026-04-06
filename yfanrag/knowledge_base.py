@@ -57,7 +57,7 @@ _CODE_HINT_RE = re.compile(r"(?:`[^`]+`|::|->|=>|==|!=|<=|>=|[{}()\[\]<>])")
 _RERANK_BACKEND_CHOICES = {"auto", "flashrank", "cross-encoder", "api", "heuristic", "none"}
 _CROSS_ENCODER_CACHE: dict[str, object] = {}
 _CROSS_ENCODER_FAILED_MODELS: set[str] = set()
-_CROSS_ENCODER_LOADING_MODELS: set[str] = set()
+_CROSS_ENCODER_LOADING_EVENTS: dict[str, threading.Event] = {}
 _CROSS_ENCODER_CACHE_LOCK = threading.Lock()
 _CROSS_ENCODER_CACHE_LIMIT = 2
 _FLASHRANK_CACHE: dict[str, object] = {}
@@ -1022,9 +1022,8 @@ class KnowledgeBaseManager:
         if model_name in _CROSS_ENCODER_FAILED_MODELS:
             return None
         try:
-            model = self._get_cached_cross_encoder(model_name)
+            model = self._get_or_load_cross_encoder(model_name)
             if model is None:
-                self._start_cross_encoder_preload(model_name)
                 return None
             pairs = [(query_text, hit.text) for hit in hits]
             raw_scores = model.predict(pairs)
@@ -1054,21 +1053,28 @@ class KnowledgeBaseManager:
             _CROSS_ENCODER_CACHE[model_name] = model
             return model
 
-    def _start_cross_encoder_preload(self, model_name: str) -> None:
-        with _CROSS_ENCODER_CACHE_LOCK:
-            if model_name in _CROSS_ENCODER_LOADING_MODELS:
-                return
-            if model_name in _CROSS_ENCODER_CACHE:
-                return
-            _CROSS_ENCODER_LOADING_MODELS.add(model_name)
-        thread = threading.Thread(
-            target=self._preload_cross_encoder_model,
-            args=(model_name,),
-            daemon=True,
-        )
-        thread.start()
+    def _get_or_load_cross_encoder(self, model_name: str) -> object | None:
+        cached = self._get_cached_cross_encoder(model_name)
+        if cached is not None:
+            return cached
 
-    def _preload_cross_encoder_model(self, model_name: str) -> None:
+        should_load = False
+        with _CROSS_ENCODER_CACHE_LOCK:
+            model = _CROSS_ENCODER_CACHE.get(model_name)
+            if model is not None:
+                _CROSS_ENCODER_CACHE.pop(model_name, None)
+                _CROSS_ENCODER_CACHE[model_name] = model
+                return model
+            event = _CROSS_ENCODER_LOADING_EVENTS.get(model_name)
+            if event is None:
+                event = threading.Event()
+                _CROSS_ENCODER_LOADING_EVENTS[model_name] = event
+                should_load = True
+
+        if not should_load:
+            event.wait()
+            return self._get_cached_cross_encoder(model_name)
+
         try:
             from sentence_transformers import CrossEncoder  # type: ignore
 
@@ -1080,11 +1086,15 @@ class KnowledgeBaseManager:
                     if oldest == model_name and len(_CROSS_ENCODER_CACHE) == 1:
                         break
                     _CROSS_ENCODER_CACHE.pop(oldest, None)
+            return model
         except (ImportError, OSError, RuntimeError, ValueError):
             _CROSS_ENCODER_FAILED_MODELS.add(model_name)
+            return None
         finally:
             with _CROSS_ENCODER_CACHE_LOCK:
-                _CROSS_ENCODER_LOADING_MODELS.discard(model_name)
+                event = _CROSS_ENCODER_LOADING_EVENTS.pop(model_name, None)
+                if event is not None:
+                    event.set()
 
     def _try_api_rerank_scores(
         self,

@@ -69,6 +69,31 @@ class InMemoryVectorStore:
         self.embeddings = kept_embeddings
         return deleted
 
+    def replace_by_doc_ids(
+        self,
+        doc_ids: Sequence[str],
+        chunks: Sequence[Chunk],
+        embeddings: Sequence[Sequence[float]],
+    ) -> int:
+        if len(chunks) != len(embeddings):
+            raise ValueError("chunks and embeddings length mismatch")
+        targets = set(doc_ids)
+        kept_chunks: List[Chunk] = []
+        kept_embeddings: List[List[float]] = []
+        deleted = 0
+        for chunk, embedding in zip(self.chunks, self.embeddings):
+            if chunk.doc_id in targets:
+                deleted += 1
+                continue
+            kept_chunks.append(chunk)
+            kept_embeddings.append(embedding)
+        for chunk, embedding in zip(chunks, embeddings):
+            kept_chunks.append(chunk)
+            kept_embeddings.append([float(x) for x in embedding])
+        self.chunks = kept_chunks
+        self.embeddings = kept_embeddings
+        return deleted
+
     @staticmethod
     def _dot(a: Sequence[float], b: Sequence[float]) -> float:
         return sum(x * y for x, y in zip(a, b))

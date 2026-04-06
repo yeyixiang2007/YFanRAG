@@ -28,13 +28,10 @@ class SimplePipeline:
 
     def ingest(self, documents: Iterable[Document]) -> List[Chunk]:
         start_ts = perf_counter()
-        all_chunks: List[Chunk] = []
-        for document in documents:
-            all_chunks.extend(self.chunker.chunk(document))
+        all_chunks, embeddings = self._prepare_chunks_and_embeddings(documents)
         if not all_chunks:
             return []
 
-        embeddings = self._embed_texts([chunk.text for chunk in all_chunks])
         self.store.add(all_chunks, embeddings)
         elapsed_ms = (perf_counter() - start_ts) * 1000.0
         log_slow_query("SimplePipeline.ingest", elapsed_ms, f"chunks={len(all_chunks)}")
@@ -45,11 +42,21 @@ class SimplePipeline:
         if not docs:
             return []
         doc_ids = [doc.doc_id for doc in docs]
-        self.delete(doc_ids=doc_ids, fts_index=fts_index)
-
-        chunks = self.ingest(docs)
-        if fts_index is not None and hasattr(fts_index, "add"):
-            fts_index.add(chunks)
+        chunks, embeddings = self._prepare_chunks_and_embeddings(docs)
+        if hasattr(self.store, "replace_by_doc_ids"):
+            self.store.replace_by_doc_ids(doc_ids, chunks, embeddings)
+        else:
+            self.store.delete_by_doc_ids(doc_ids)
+            if chunks:
+                self.store.add(chunks, embeddings)
+        if fts_index is not None:
+            if hasattr(fts_index, "replace_by_doc_ids"):
+                fts_index.replace_by_doc_ids(doc_ids, chunks)
+            else:
+                if hasattr(fts_index, "delete_by_doc_ids"):
+                    fts_index.delete_by_doc_ids(doc_ids)
+                if hasattr(fts_index, "add"):
+                    fts_index.add(chunks)
         return chunks
 
     def delete(
@@ -121,3 +128,15 @@ class SimplePipeline:
         if any(vec is None for vec in vectors):  # pragma: no cover - defensive
             raise RuntimeError("failed to generate embeddings for all chunks")
         return [vec for vec in vectors if vec is not None]
+
+    def _prepare_chunks_and_embeddings(
+        self,
+        documents: Iterable[Document],
+    ) -> tuple[List[Chunk], List[List[float]]]:
+        all_chunks: List[Chunk] = []
+        for document in documents:
+            all_chunks.extend(self.chunker.chunk(document))
+        if not all_chunks:
+            return [], []
+        embeddings = self._embed_texts([chunk.text for chunk in all_chunks])
+        return all_chunks, embeddings

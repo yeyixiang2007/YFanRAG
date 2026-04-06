@@ -51,25 +51,8 @@ class SqliteFtsIndex:
             self._conn.close()
 
     def add(self, chunks: List[object]) -> None:
-        rows = []
-        for chunk in chunks:
-            search_text = self._build_search_text(str(chunk.text))
-            if self._has_search_text:
-                rows.append((chunk.chunk_id, chunk.doc_id, chunk.text, search_text))
-            else:
-                rows.append((chunk.chunk_id, chunk.doc_id, chunk.text))
         with self._lock:
-            if self._has_search_text:
-                self._conn.executemany(
-                    f"INSERT INTO {self.table}(chunk_id, doc_id, text, search_text) "
-                    "VALUES (?, ?, ?, ?)",
-                    rows,
-                )
-            else:
-                self._conn.executemany(
-                    f"INSERT INTO {self.table}(chunk_id, doc_id, text) VALUES (?, ?, ?)",
-                    rows,
-                )
+            self._insert_chunks(chunks)
             self._conn.commit()
 
     def query(self, query: str, top_k: int = 5) -> List[FtsMatch]:
@@ -123,6 +106,23 @@ class SqliteFtsIndex:
         with self._lock:
             return delete_by_doc_ids_batched(self._conn, self.table, ids)
 
+    def replace_by_doc_ids(self, doc_ids: Sequence[str], chunks: Sequence[object]) -> int:
+        with self._lock:
+            self._conn.execute("BEGIN")
+            try:
+                deleted = delete_by_doc_ids_batched(
+                    self._conn,
+                    self.table,
+                    doc_ids,
+                    commit=False,
+                )
+                self._insert_chunks(chunks)
+                self._conn.commit()
+                return deleted
+            except sqlite3.Error:
+                self._conn.rollback()
+                raise
+
     def _ensure_schema(self) -> None:
         try:
             self._conn.execute(
@@ -139,6 +139,28 @@ class SqliteFtsIndex:
             if row["name"] == column_name:
                 return True
         return False
+
+    def _insert_chunks(self, chunks: Sequence[object]) -> None:
+        rows = []
+        for chunk in chunks:
+            search_text = self._build_search_text(str(chunk.text))
+            if self._has_search_text:
+                rows.append((chunk.chunk_id, chunk.doc_id, chunk.text, search_text))
+            else:
+                rows.append((chunk.chunk_id, chunk.doc_id, chunk.text))
+        if not rows:
+            return
+        if self._has_search_text:
+            self._conn.executemany(
+                f"INSERT INTO {self.table}(chunk_id, doc_id, text, search_text) "
+                "VALUES (?, ?, ?, ?)",
+                rows,
+            )
+        else:
+            self._conn.executemany(
+                f"INSERT INTO {self.table}(chunk_id, doc_id, text) VALUES (?, ?, ?)",
+                rows,
+            )
 
     @classmethod
     def _build_match_queries(cls, query: str) -> list[str]:

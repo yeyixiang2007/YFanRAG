@@ -35,3 +35,32 @@ def test_duckdb_vss_store_roundtrip_without_vss(tmp_path):
     assert [chunk.chunk_id for chunk in by_doc] == ["c2"]
     assert deleted >= 0
     assert all(chunk.doc_id != "d1" for chunk in remain)
+
+
+def test_duckdb_vss_store_delete_by_doc_ids_batches_large_input(tmp_path):
+    db_path = tmp_path / "vss_delete_batch.duckdb"
+    store = DuckDbVssStore(
+        path=str(db_path),
+        embedding_dim=4,
+        enable_vss=False,
+        distance_metric="l2",
+    )
+    chunks = [
+        Chunk(
+            chunk_id=f"c{i}",
+            doc_id=f"d{i}",
+            text=f"doc {i}",
+            start=i,
+            end=i + 1,
+        )
+        for i in range(1100)
+    ]
+    embeddings = [[1.0, 0.0, 0.0, 0.0] for _ in chunks]
+    store.add(chunks, embeddings)
+
+    deleted = store.delete_by_doc_ids([chunk.doc_id for chunk in chunks])
+    remain = store.query([1.0, 0.0, 0.0, 0.0], top_k=1)
+    store.close()
+
+    assert deleted == 1100
+    assert remain == []

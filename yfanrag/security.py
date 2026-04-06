@@ -22,9 +22,13 @@ def ensure_path_in_whitelist(
     raw_path: str | Path,
     whitelist: Sequence[str] | None,
     label: str = "path",
+    *,
+    allow_empty: bool = True,
 ) -> None:
     if not whitelist:
-        return
+        if allow_empty:
+            return
+        raise ValueError(f"{label} whitelist is required")
     target = Path(raw_path).resolve()
     for allowed in whitelist:
         base = Path(allowed).resolve()

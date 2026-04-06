@@ -1,3 +1,5 @@
+import pytest
+
 from yfanrag.chunking import FixedChunker
 from yfanrag.embedders import HashingEmbedder
 from yfanrag.models import Document
@@ -42,6 +44,17 @@ class QueryAwareEmbedder:
         batch = list(texts)
         self.query_calls.append(batch)
         return [[2.0] for _ in batch]
+
+
+class FailingSecondEmbedder:
+    def __init__(self):
+        self.calls = 0
+
+    def embed(self, texts):
+        self.calls += 1
+        if self.calls >= 2:
+            raise RuntimeError("embed failed")
+        return [[float(len(text))] for text in texts]
 
 
 def test_pipeline_minimal_loop():
@@ -170,3 +183,19 @@ def test_pipeline_uses_document_and_query_embedding_methods():
 
     assert embedder.document_calls == [["hello"]]
     assert embedder.query_calls == [["hello"]]
+
+
+def test_pipeline_upsert_keeps_old_data_when_embedding_fails():
+    store = InMemoryVectorStore()
+    pipeline = SimplePipeline(
+        chunker=FixedChunker(chunk_size=50, chunk_overlap=0),
+        embedder=FailingSecondEmbedder(),
+        store=store,
+    )
+    pipeline.upsert([Document(doc_id="doc-1", text="hello v1")])
+
+    with pytest.raises(RuntimeError):
+        pipeline.upsert([Document(doc_id="doc-1", text="hello v2")])
+
+    assert len(store.chunks) == 1
+    assert store.chunks[0].text == "hello v1"

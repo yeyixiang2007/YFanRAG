@@ -58,6 +58,25 @@ def test_sqlite_vec1_store_extension_path_whitelist(tmp_path):
         raise AssertionError("expected ValueError for extension whitelist")
 
 
+def test_sqlite_vec1_store_requires_extension_whitelist_when_path_is_provided(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    db_path = tmp_path / "vec1_security_empty.db"
+    fake_ext = tmp_path / "ext" / "vec1.so"
+    fake_ext.parent.mkdir(parents=True, exist_ok=True)
+    fake_ext.write_text("", encoding="utf-8")
+    monkeypatch.delenv("YFANRAG_EXTENSION_WHITELIST", raising=False)
+
+    with pytest.raises(ValueError):
+        SqliteVec1Store(
+            path=str(db_path),
+            load_extension=True,
+            extension_path=str(fake_ext),
+            extension_whitelist=None,
+        )
+
+
 def test_sqlite_vec1_store_delete_by_doc_ids_batches_large_input(tmp_path):
     db_path = tmp_path / "vec1_delete_batch.db"
     store = SqliteVec1Store(

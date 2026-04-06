@@ -72,26 +72,7 @@ class SqliteVec1Store:
         dim = self._infer_dim(embeddings)
         with self._lock:
             self._ensure_dim(dim)
-
-            rows = []
-            for chunk, embedding in zip(chunks, embeddings):
-                rows.append(
-                    (
-                        chunk.chunk_id,
-                        chunk.doc_id,
-                        chunk.start,
-                        chunk.end,
-                        chunk.metadata.get("index"),
-                        chunk.text,
-                        self._serialize_float32(embedding),
-                    )
-                )
-            self._conn.executemany(
-                f"INSERT INTO {self.table} "
-                "(chunk_id, doc_id, start, end_pos, meta_index, text, embedding) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                rows,
-            )
+            self._insert_chunks(chunks, embeddings)
             self._conn.commit()
 
             if self._vec1_enabled:
@@ -143,6 +124,35 @@ class SqliteVec1Store:
                 self._sync_vec1_index()
             return deleted
 
+    def replace_by_doc_ids(
+        self,
+        doc_ids: Sequence[str],
+        chunks: Sequence[Chunk],
+        embeddings: Sequence[Sequence[float]],
+    ) -> int:
+        if len(chunks) != len(embeddings):
+            raise ValueError("chunks and embeddings length mismatch")
+        dim = self._infer_dim(embeddings) if chunks else self.embedding_dim
+        with self._lock:
+            if dim is not None:
+                self._ensure_dim(dim)
+            self._conn.execute("BEGIN")
+            try:
+                deleted = delete_by_doc_ids_batched(
+                    self._conn,
+                    self.table,
+                    doc_ids,
+                    commit=False,
+                )
+                self._insert_chunks(chunks, embeddings)
+                if self._vec1_enabled:
+                    self._sync_vec1_index(commit=False)
+                self._conn.commit()
+                return deleted
+            except sqlite3.Error:
+                self._conn.rollback()
+                raise
+
     def _ensure_data_schema(self) -> None:
         self._conn.execute(
             f"CREATE TABLE IF NOT EXISTS {self.table} ("
@@ -157,6 +167,33 @@ class SqliteVec1Store:
             ")"
         )
         self._conn.commit()
+
+    def _insert_chunks(
+        self,
+        chunks: Sequence[Chunk],
+        embeddings: Sequence[Sequence[float]],
+    ) -> None:
+        if not chunks:
+            return
+        rows = []
+        for chunk, embedding in zip(chunks, embeddings):
+            rows.append(
+                (
+                    chunk.chunk_id,
+                    chunk.doc_id,
+                    chunk.start,
+                    chunk.end,
+                    chunk.metadata.get("index"),
+                    chunk.text,
+                    self._serialize_float32(embedding),
+                )
+            )
+        self._conn.executemany(
+            f"INSERT INTO {self.table} "
+            "(chunk_id, doc_id, start, end_pos, meta_index, text, embedding) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
 
     def _ensure_vec1_schema(self) -> None:
         self._conn.execute(
@@ -179,6 +216,7 @@ class SqliteVec1Store:
                     self.extension_path,
                     whitelist,
                     label="sqlite extension path",
+                    allow_empty=False,
                 )
                 self._conn.load_extension(self.extension_path)
             else:
@@ -192,7 +230,7 @@ class SqliteVec1Store:
             except sqlite3.Error:
                 pass
 
-    def _sync_vec1_index(self) -> None:
+    def _sync_vec1_index(self, *, commit: bool = True) -> None:
         if not self._vec1_enabled:
             return
         self._conn.execute(f"DELETE FROM {self.index_table}")
@@ -205,7 +243,8 @@ class SqliteVec1Store:
             f"INSERT INTO {self.index_table}(cmd, arg) VALUES('rebuild', ?)",
             (json.dumps(mode),),
         )
-        self._conn.commit()
+        if commit:
+            self._conn.commit()
 
     def _query_vec1_rowids(
         self,
